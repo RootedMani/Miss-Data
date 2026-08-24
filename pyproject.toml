@@ -12,6 +12,7 @@ license = { text = "MIT" }
 dependencies = [
     "groq>=1.0.0",
     "anthropic>=0.40.0",
+    "httpx[socks]>=0.27.0",
     "python-dotenv>=1.0.0",
     "colorama>=0.4.6",
 ]

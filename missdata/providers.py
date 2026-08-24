@@ -20,6 +20,8 @@ calls + streaming + tool-call accumulation into one normalized result.
 from __future__ import annotations
 
 import json
+import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -44,6 +46,33 @@ class ProviderError(Exception):
     pass
 
 
+def normalize_proxy_environment() -> None:
+    """Make common SOCKS proxy URLs compatible with httpx-based SDKs.
+
+    Several desktop proxy clients export ``socks://`` in ``ALL_PROXY``. httpx
+    accepts the explicit ``socks5://`` scheme instead, so normalize only that
+    spelling before either remote-provider client is constructed. SOCKS support
+    itself is supplied by the ``httpx[socks]`` dependency.
+    """
+    for name in ("ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
+        value = os.environ.get(name)
+        if value and value.lower().startswith("socks://"):
+            os.environ[name] = "socks5://" + value[len("socks://"):]
+
+
+def provider_startup_error(provider: str, error: Exception) -> ProviderError:
+    """Explain proxy setup failures without exposing credentials in URLs."""
+    message = str(error)
+    if "proxy" in message.lower() or "socks" in message.lower():
+        return ProviderError(
+            f"Failed to configure {provider} network access: {message}. "
+            "If you use a SOCKS proxy, reinstall dependencies with "
+            "`pip install -r requirements.txt` so `httpx[socks]` installs its "
+            "SOCKS support; otherwise unset ALL_PROXY/HTTP_PROXY/HTTPS_PROXY."
+        )
+    return ProviderError(f"Failed to initialize {provider} client: {message}")
+
+
 # ---------------------------------------------------------------------------
 # Groq (OpenAI-compatible chat.completions API)
 # ---------------------------------------------------------------------------
@@ -60,7 +89,11 @@ class GroqProvider:
                 "No Groq API key found. Set GROQ_API_KEY in your environment, "
                 "or run `missdata --set-key groq` to store one."
             )
-        self.client = Groq(api_key=api_key)
+        normalize_proxy_environment()
+        try:
+            self.client = Groq(api_key=api_key)
+        except Exception as error:  # noqa: BLE001 -- SDK validates proxy configuration at startup
+            raise provider_startup_error("Groq", error) from error
         self.settings = settings
         self.on_text = on_text or (lambda s: None)
 
@@ -82,19 +115,7 @@ class GroqProvider:
         ]
 
     def stream_turn(self, messages: list[dict], tool_schemas: list[dict]) -> StreamResult:
-        try:
-            completion = self.client.chat.completions.create(
-                model=self.settings.groq_model,
-                messages=messages,
-                temperature=1,
-                max_completion_tokens=self.settings.max_output_tokens,
-                top_p=1,
-                stream=True,
-                stop=None,
-                tools=self.tool_schemas_native(tool_schemas),
-            )
-        except Exception as e:  # noqa: BLE001 — surface API errors clearly to the CLI
-            raise ProviderError(f"Groq API error: {e}") from e
+        completion = self._create_completion(messages, tool_schemas)
 
         text = ""
         tool_calls: dict[int, dict] = {}
@@ -130,6 +151,43 @@ class GroqProvider:
                  for i, tc in enumerate(ordered)]
         return StreamResult(text=text, tool_calls=calls)
 
+    def _create_completion(self, messages: list[dict], tool_schemas: list[dict]):
+        """Create a streamed completion, retrying errors that are often transient.
+
+        Groq's SDK retries some failures itself, but a gateway 403 can also be a
+        short-lived edge/WAF failure. A single delayed retry avoids making the
+        user manually resend while still surfacing persistent permission errors.
+        """
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                return self.client.chat.completions.create(
+                    model=self.settings.groq_model,
+                    messages=messages,
+                    temperature=1,
+                    max_completion_tokens=self.settings.max_output_tokens,
+                    top_p=1,
+                    stream=True,
+                    stop=None,
+                    tools=self.tool_schemas_native(tool_schemas),
+                )
+            except Exception as error:  # noqa: BLE001 -- normalize provider SDK errors
+                last_error = error
+                status_code = getattr(error, "status_code", None)
+                retryable = status_code in (403, 408, 409, 429) or status_code is None or status_code >= 500
+                if not retryable or attempt:
+                    break
+                time.sleep(1)
+
+        assert last_error is not None
+        if getattr(last_error, "status_code", None) == 403:
+            raise ProviderError(
+                "Groq returned 403 Forbidden after one automatic retry. Verify that "
+                "your GROQ_API_KEY is active and permitted to use "
+                f"'{self.settings.groq_model}', then check your Groq account or network policy."
+            ) from last_error
+        raise ProviderError(f"Groq API error: {last_error}") from last_error
+
     def append_assistant_turn(self, messages: list[dict], result: StreamResult) -> None:
         if not result.tool_calls:
             messages.append({"role": "assistant", "content": result.text})
@@ -164,7 +222,11 @@ class AnthropicProvider:
                 "No Anthropic API key found. Set ANTHROPIC_API_KEY in your environment, "
                 "or run `missdata --set-key anthropic` to store one."
             )
-        self.client = anthropic.Anthropic(api_key=api_key)
+        normalize_proxy_environment()
+        try:
+            self.client = anthropic.Anthropic(api_key=api_key)
+        except Exception as error:  # noqa: BLE001 -- SDK validates proxy configuration at startup
+            raise provider_startup_error("Anthropic", error) from error
         self.settings = settings
         self.on_text = on_text or (lambda s: None)
         self._system = ""

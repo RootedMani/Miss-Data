@@ -57,6 +57,19 @@ pip install -r requirements.txt
 python run.py
 ```
 
+### SOCKS proxy users
+
+Miss Data supports `socks://` proxy environment variables from common desktop
+proxy clients by converting them to the `socks5://` form required by its HTTP
+client. Install the project's dependencies so SOCKS support is available:
+
+```bash
+pip install -r requirements.txt
+```
+
+If you do not intend to use a proxy, remove stale `ALL_PROXY`, `HTTP_PROXY`,
+and `HTTPS_PROXY` environment variables before launching the app.
+
 ## 3. First run
 
 The first time you run `missdata`, it will ask for an API key for whichever provider you're using (Groq by default) and save it to a config file — it does **not** get stored inside the project folder, so it's safe from accidental commits. You can also set it up ahead of time:
@@ -111,7 +124,7 @@ You › create a Flask app with a health check endpoint
 | `/model <name>` | Change the model for the current provider |
 | `/approval <always\|risky\|auto>` | Change confirmation behavior |
 | `/sandbox <on\|off>` | Confine file tools to cwd + block dangerous commands (default: on) |
-| `/lang <en\|fa>` | Set UI language hint |
+| `/lang <en\|fa>` | Set the assistant's response language (English is the default) |
 
 ## 5. Approval modes
 
@@ -139,6 +152,7 @@ This is confinement for a trusted local agent, not a hardened multi-tenant jail 
 - `list_dir` (tree view, skips `.git`/`node_modules`/etc.), `search_files` (glob), `grep` (content search)
 - `run_command` — shell command in the working directory (bash on Linux/macOS, cmd on Windows), sandboxed as above
 - `run_python` — quick Python snippet (`python -c <code>`) without writing a temp file, same sandboxing as `run_command`
+- `web_search` — search the public web with DuckDuckGo and return source titles/URLs; queries must not contain secrets or private code
 - `remember_fact` — saves a durable fact to memory, available in future sessions
 
 After each turn, Miss Data prints a **"Files touched this turn"** summary listing every file it created, edited, deleted, or moved — so it's always clear what changed on disk without scrolling back through the tool-call log.

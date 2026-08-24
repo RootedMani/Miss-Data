@@ -16,12 +16,16 @@ from __future__ import annotations
 
 import difflib
 import fnmatch
+import html
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
 import sys
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 from . import sandbox
@@ -35,7 +39,7 @@ MAX_GREP_FILES_SCANNED = 2000
 
 # Tool names considered "risky" -> require approval unless mode == auto
 RISKY_TOOLS = {"write_file", "edit_file", "delete_path", "run_command", "make_dir", "move_path", "run_python"}
-READ_ONLY_TOOLS = {"read_file", "list_dir", "search_files", "grep", "get_cwd", "which"}
+READ_ONLY_TOOLS = {"read_file", "list_dir", "search_files", "grep", "get_cwd", "which", "web_search"}
 
 # Tools that mutate the filesystem, and which of their args are the affected
 # path(s) — used by agent.py to build a "files touched this turn" summary.
@@ -310,6 +314,53 @@ def which(args: dict, cwd: str, *, sandbox_root: str | None = None, sandbox_enab
     name = args["name"]
     found = shutil.which(name)
     return found or f"'{name}' not found on PATH"
+
+
+def web_search(args: dict, cwd: str, *, sandbox_root: str | None = None, sandbox_enabled: bool = True) -> str:
+    """Search the public web and return a compact, sourceable result list.
+
+    This uses DuckDuckGo's lightweight HTML endpoint so the application does
+    not need a second API key or an additional package. The query is sent to
+    DuckDuckGo; callers should not include secrets or private source code.
+    """
+    query = str(args["query"]).strip()
+    if not query:
+        raise ToolError("Search query cannot be empty.")
+    try:
+        max_results = max(1, min(int(args.get("max_results", 5)), 10))
+    except (TypeError, ValueError):
+        max_results = 5
+
+    url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query})
+    request = urllib.request.Request(url, headers={"User-Agent": "MissData/0.1 (+https://github.com/)"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            page = response.read().decode("utf-8", errors="replace")
+    except Exception as error:  # noqa: BLE001 -- network errors need a concise tool result
+        raise ToolError(f"Web search failed: {error}") from error
+
+    matches = re.findall(
+        r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+        page,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    results: list[str] = []
+    for href, raw_title in matches:
+        parsed = urllib.parse.urlparse(html.unescape(href))
+        if parsed.netloc.endswith("duckduckgo.com"):
+            target = urllib.parse.parse_qs(parsed.query).get("uddg", [href])[0]
+        else:
+            target = href
+        title = re.sub(r"<[^>]+>", "", raw_title)
+        title = html.unescape(title).strip()
+        if title:
+            results.append(f"- {title}\n  {target}")
+        if len(results) >= max_results:
+            break
+
+    if not results:
+        return f"No web results found for: {query}"
+    return f"Web results for: {query}\n" + "\n".join(results)
 
 
 # ---------------------------------------------------------------------------
@@ -597,6 +648,18 @@ TOOL_SCHEMAS = [
             "required": ["name"],
         },
     },
+    {
+        "name": "web_search",
+        "description": "Search the public web for current information and return result titles and URLs. This sends the query to DuckDuckGo; never search for secrets or private source code.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Public web search query."},
+                "max_results": {"type": "integer", "description": "Number of results to return (1-10, default 5)."},
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 TOOL_IMPLEMENTATIONS = {
@@ -613,6 +676,7 @@ TOOL_IMPLEMENTATIONS = {
     "run_python": run_python,
     "get_cwd": get_cwd,
     "which": which,
+    "web_search": web_search,
 }
 
 
@@ -647,4 +711,6 @@ def describe_call(name: str, args: dict) -> str:
         return "Get working directory"
     if name == "which":
         return f"Check for '{args.get('name')}' on PATH"
+    if name == "web_search":
+        return f"Search the web for '{args.get('query')}'"
     return f"{name}({args})"

@@ -173,6 +173,7 @@ def handle_slash_command(cmd: str, agent: Agent, settings: Settings) -> bool:
         else:
             settings.language = choice
             settings.save()
+            agent._reset_system_message()
             ui.print_info(f"Language set to '{choice}'.")
 
     else:
