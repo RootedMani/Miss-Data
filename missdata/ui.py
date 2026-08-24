@@ -78,7 +78,7 @@ def print_help() -> None:
         ("/gpu-layers <n>|auto", "Force N layers onto GPU for Ollama (troubleshoots low-VRAM cards)"),
         ("/approval <always|risky|auto>", "Set how risky actions are confirmed"),
         ("/sandbox <on|off>", "Confine file tools to cwd + block dangerous commands (default: on)"),
-        ("/lang <en|fa>", "Set UI language"),
+        ("/lang <en|fa>", "Set the assistant response language"),
     ]
     print(bold("\nCommands:"))
     for cmd, desc in rows:

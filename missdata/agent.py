@@ -21,10 +21,10 @@ def load_system_prompt_template() -> str:
     try:
         return SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return "You are Miss Data, a helpful coding agent. {memory_facts}"
+        return "You are Miss Data, a helpful coding agent. Always respond in {response_language}. {memory_facts}"
 
 
-def build_system_prompt(cwd: str) -> str:
+def build_system_prompt(cwd: str, language: str = "en") -> str:
     template = load_system_prompt_template()
     shell_name = os.environ.get("SHELL") or os.environ.get("COMSPEC") or "unknown"
     return (
@@ -32,6 +32,7 @@ def build_system_prompt(cwd: str) -> str:
         .replace("{os_name}", f"{platform.system()} {platform.release()}")
         .replace("{cwd}", cwd)
         .replace("{shell_name}", shell_name)
+        .replace("{response_language}", "Persian (فارسی)" if language == "fa" else "English")
         .replace("{memory_facts}", memory.facts_as_text())
     )
 
@@ -63,7 +64,7 @@ class Agent:
         print(chunk, end="", flush=True)
 
     def _reset_system_message(self) -> None:
-        system_content = build_system_prompt(self.cwd)
+        system_content = build_system_prompt(self.cwd, self.settings.language)
         # Always strip any leftover system-role message first — the message
         # list may carry a Groq-style system message from before a provider
         # switch, which Anthropic must never see mixed into `messages`.

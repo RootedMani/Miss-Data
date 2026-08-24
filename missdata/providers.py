@@ -20,6 +20,7 @@ calls + streaming + tool-call accumulation into one normalized result.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -82,19 +83,7 @@ class GroqProvider:
         ]
 
     def stream_turn(self, messages: list[dict], tool_schemas: list[dict]) -> StreamResult:
-        try:
-            completion = self.client.chat.completions.create(
-                model=self.settings.groq_model,
-                messages=messages,
-                temperature=1,
-                max_completion_tokens=self.settings.max_output_tokens,
-                top_p=1,
-                stream=True,
-                stop=None,
-                tools=self.tool_schemas_native(tool_schemas),
-            )
-        except Exception as e:  # noqa: BLE001 — surface API errors clearly to the CLI
-            raise ProviderError(f"Groq API error: {e}") from e
+        completion = self._create_completion(messages, tool_schemas)
 
         text = ""
         tool_calls: dict[int, dict] = {}
@@ -129,6 +118,43 @@ class GroqProvider:
         calls = [ToolCall(id=tc["id"] or f"call_{i}", name=tc["name"], arguments=tc["arguments"])
                  for i, tc in enumerate(ordered)]
         return StreamResult(text=text, tool_calls=calls)
+
+    def _create_completion(self, messages: list[dict], tool_schemas: list[dict]):
+        """Create a streamed completion, retrying errors that are often transient.
+
+        Groq's SDK retries some failures itself, but a gateway 403 can also be a
+        short-lived edge/WAF failure. A single delayed retry avoids making the
+        user manually resend while still surfacing persistent permission errors.
+        """
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                return self.client.chat.completions.create(
+                    model=self.settings.groq_model,
+                    messages=messages,
+                    temperature=1,
+                    max_completion_tokens=self.settings.max_output_tokens,
+                    top_p=1,
+                    stream=True,
+                    stop=None,
+                    tools=self.tool_schemas_native(tool_schemas),
+                )
+            except Exception as error:  # noqa: BLE001 -- normalize provider SDK errors
+                last_error = error
+                status_code = getattr(error, "status_code", None)
+                retryable = status_code in (403, 408, 409, 429) or status_code is None or status_code >= 500
+                if not retryable or attempt:
+                    break
+                time.sleep(1)
+
+        assert last_error is not None
+        if getattr(last_error, "status_code", None) == 403:
+            raise ProviderError(
+                "Groq returned 403 Forbidden after one automatic retry. Verify that "
+                "your GROQ_API_KEY is active and permitted to use "
+                f"'{self.settings.groq_model}', then check your Groq account or network policy."
+            ) from last_error
+        raise ProviderError(f"Groq API error: {last_error}") from last_error
 
     def append_assistant_turn(self, messages: list[dict], result: StreamResult) -> None:
         if not result.tool_calls:

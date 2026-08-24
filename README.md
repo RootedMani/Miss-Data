@@ -111,7 +111,7 @@ You › create a Flask app with a health check endpoint
 | `/model <name>` | Change the model for the current provider |
 | `/approval <always\|risky\|auto>` | Change confirmation behavior |
 | `/sandbox <on\|off>` | Confine file tools to cwd + block dangerous commands (default: on) |
-| `/lang <en\|fa>` | Set UI language hint |
+| `/lang <en\|fa>` | Set the assistant's response language (English is the default) |
 
 ## 5. Approval modes
 
@@ -139,6 +139,7 @@ This is confinement for a trusted local agent, not a hardened multi-tenant jail 
 - `list_dir` (tree view, skips `.git`/`node_modules`/etc.), `search_files` (glob), `grep` (content search)
 - `run_command` — shell command in the working directory (bash on Linux/macOS, cmd on Windows), sandboxed as above
 - `run_python` — quick Python snippet (`python -c <code>`) without writing a temp file, same sandboxing as `run_command`
+- `web_search` — search the public web with DuckDuckGo and return source titles/URLs; queries must not contain secrets or private code
 - `remember_fact` — saves a durable fact to memory, available in future sessions
 
 After each turn, Miss Data prints a **"Files touched this turn"** summary listing every file it created, edited, deleted, or moved — so it's always clear what changed on disk without scrolling back through the tool-call log.
