@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "missdata"
+version = "0.1.0"
+description = "Miss Data (خانم داده) — a terminal coding agent."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "groq>=1.0.0",
+    "anthropic>=0.40.0",
+    "python-dotenv>=1.0.0",
+    "colorama>=0.4.6",
+]
+
+[project.scripts]
+missdata = "missdata.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["missdata*"]
+
+[tool.setuptools.package-data]
+missdata = ["system_prompt.md"]
