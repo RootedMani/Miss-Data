@@ -313,3 +313,21 @@ The full command and safety reference is maintained in [DOCUMENTATION.md](DOCUME
 ### Portable settings backup
 
 Use `/export-config [path]` to create a small, portable JSON backup of **settings only**. It includes provider/model preferences, recovery policies, budget and work-profile settings, sandbox/approval configuration, and fallback order. It deliberately excludes API keys, `.env` values, logs, prompt history, and saved conversations. Use `/import-config <path>` to inspect and apply a compatible backup after confirmation. If an imported provider cannot initialize with the keys on the new machine, the existing settings remain active.
+
+## 9. Built-in manual and guided help
+
+Miss Data now includes a terminal manual inspired by Linux `man` pages. Use `/man` to see topics, `/man <topic>` to read a focused guide, and `/man search <words>` to find related topics without spending model tokens. `/help` remains a compact command list, while `/help <topic>` opens the same focused manual page.
+
+| Need | Command |
+|---|---|
+| Learn the basics | `/man getting-started` |
+| See all manual topics | `/man` |
+| Find help by keyword | `/man search ollama` |
+| Manage keys/providers | `/man keys` or `/man providers` |
+| Learn recovery and limits | `/man resilience` |
+| Understand plan, test, review, and Git workflows | `/man workflows` or `/man git` |
+| Understand saved conversations and privacy | `/man sessions` or `/man privacy` |
+| Update the program safely | `/man update` |
+| Diagnose a problem | `/man troubleshooting` |
+
+The agent system prompt also receives a capability reference generated from the same manual source. When users ask questions such as “How do I resume a session?” or “Can Miss Data review code without editing it?”, the model is instructed to provide the exact supported command, state relevant safety boundaries, and recommend the appropriate `/man` page. It is instructed not to invent commands or features.

@@ -16,6 +16,7 @@ from .config import OPENAI_COMPATIBLE_PRESETS, Settings, get_api_key, get_api_ke
 from .ollama_recovery import diagnose_ollama_error, repair_ollama
 from .providers import ProviderError, ToolCall, make_provider
 from .sessions import new_session_id
+from .manual import capability_reference
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "system_prompt.md"
 
@@ -37,6 +38,7 @@ def build_system_prompt(cwd: str, language: str = "en") -> str:
         .replace("{shell_name}", shell_name)
         .replace("{response_language}", "Persian (فارسی)" if language == "fa" else "English")
         .replace("{memory_facts}", memory.facts_as_text())
+        .replace("{capability_reference}", capability_reference())
     )
 
 

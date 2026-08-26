@@ -11,7 +11,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import memory, ui
+from . import manual, memory, ui
 from .activity import ActivityLogger
 from .agent import Agent
 from .config import (
@@ -126,6 +126,33 @@ def _refresh_active_credentials(agent: Agent, provider: str) -> None:
         ui.print_info(f"Active provider {provider} refreshed with its first configured key.")
 
 
+def _show_manual(topic: str) -> None:
+    """Render a searchable man-style page without consuming model tokens."""
+    query = topic.strip()
+    if not query:
+        print(ui.bold("\nMiss Data manual"))
+        print(manual.index_text())
+        print()
+        return
+    if query.lower().startswith("search "):
+        results = manual.search(query[7:])
+        if not results:
+            ui.print_info("No manual topics matched. Try `/man` to see the index.")
+        else:
+            print(ui.bold("\nManual search results:"))
+            for page in results:
+                print(f"  {page.name:<18} {page.synopsis}")
+            print(ui.dim("Open a page with `/man <topic>`."))
+            print()
+        return
+    page = manual.lookup(query)
+    if page is None:
+        ui.print_error(f"No manual page for '{query}'. Use `/man` or `/man search {query}`.")
+        return
+    print("\n" + ui.bold(manual.render(page)))
+    print()
+
+
 def _save_session(agent: Agent) -> None:
     """Best-effort local conversation save; never blocks an answer or command."""
     try:
@@ -198,7 +225,15 @@ def handle_slash_command(cmd: str, agent: Agent, settings: Settings) -> bool:
         return False
 
     if name == "/help":
-        ui.print_help()
+        if rest.strip():
+            _show_manual(rest)
+        else:
+            ui.print_help()
+            print(ui.dim("Use `/man` for the full topic index or `/help <topic>` for a focused page."))
+
+    elif name == "/man":
+        _show_manual(rest)
+        agent.logger.event("manual_requested", topic=rest.strip() or "index")
 
     elif name == "/update":
         action = rest.strip().lower() or "check"
