@@ -1,3 +1,17 @@
+Metadata-Version: 2.4
+Name: missdata
+Version: 0.1.0
+Summary: Miss Data (خانم داده) — a terminal coding agent.
+License: MIT
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: groq>=1.0.0
+Requires-Dist: anthropic>=0.40.0
+Requires-Dist: httpx[socks]>=0.27.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: colorama>=0.4.6
+Requires-Dist: prompt_toolkit>=3.0.43
+
 # Miss Data (خانم داده)
 
 A terminal coding agent. It reads and edits files, searches your codebase, runs shell commands, and remembers durable facts across sessions — all from the command line. Works with **Groq**, **Anthropic (Claude)**, **Ollama** (local models), or any **OpenAI-compatible API** (DeepSeek, OpenAI, OpenRouter, Together AI, Mistral, Fireworks, xAI/Grok, Moonshot/Kimi, Perplexity, or a fully custom endpoint) as the LLM backend, switchable at any time.
@@ -197,7 +211,7 @@ Use `/keys show <provider>` to inspect a provider's configured key slots. The de
 
 Press **Ctrl+C once** while the model is thinking or streaming its answer to stop the active response safely. Already printed text remains visible, but the incomplete response and its matching unfinished user turn are excluded from conversation history, preventing a broken half-turn from affecting the next request. Cancellation is recorded in the session log and does not trigger key rotation or provider failover.
 
-The project now includes `prompt_toolkit` for interactive terminal input. On Linux and other TTY environments, it provides normal cursor movement, backspace/delete behavior across the current command line, and persistent up/down command history saved in the Miss Data configuration directory. Colored prompts are passed through the editor’s ANSI-aware formatter, so terminal style codes render as colors instead of appearing as literal `^[` characters. The REPL transparently uses ordinary standard input in non-interactive contexts or if the optional editor cannot initialize.
+The project now includes `prompt_toolkit` for interactive terminal input. On Linux and other TTY environments, it provides normal cursor movement, backspace/delete behavior across the current command line, and persistent up/down command history saved in the Miss Data configuration directory. The REPL transparently uses ordinary standard input in non-interactive contexts or if the optional editor cannot initialize.
 
 | Platform | Log directory |
 |---|---|
@@ -280,36 +294,3 @@ This holds `settings.json` (provider/model/approval choice and fallback order), 
 ## 11. Roadmap (web version)
 
 The `Agent` class is deliberately decoupled from the terminal (`ui.py` is the only CLI-specific piece it talks to indirectly via callbacks). A future web frontend can drive `missdata.agent.Agent` directly — swap the input/output layer, keep the tool execution and provider logic as-is.
-
-## 8. Local-first coding workflows
-
-Miss Data now includes a set of optional workflows designed to reduce unnecessary API use while making edits easier to inspect and undo. These features are local-first: project mapping, test discovery, Git summaries, session storage, and privacy cleanup operate on the local machine and do not require a model call unless a command explicitly starts one.
-
-| Workflow | Command | Behavior and safety boundary |
-|---|---|---|
-| Project onboarding | `/map` | Builds a local project overview, detects common manifests and languages, and suggests a test command without sending project content to a provider. |
-| Test discovery | `/test` | Lists inferred test commands. `/test run <n>` runs a selected command only through the existing approval controls. |
-| Context meter | `/context` | Shows an approximate character/token estimate for the current conversation. It is not a provider billing value. |
-| Planned execution | `/mode plan` | Requests a no-tool implementation plan for each normal request. Use `/approve` to execute the pending request or `/reject` to discard it. `/mode direct` restores normal behavior. |
-| Change inspection | `/diff [revision]` | Shows a bounded read-only Git diff. |
-| Checkpoints | `/checkpoint [name]` | Stages and commits all current project changes only after confirmation. `/checkpoints` lists recent commits. |
-| Rollback | `/restore <revision>` | Performs a confirmed hard restore to a listed commit. It warns that uncommitted changes will be lost. |
-| Sessions | `/sessions`, `/resume <id>`, `/session-name`, `/new-session`, `/delete-session` | Saves conversation state locally so users can resume work without rebuilding context. |
-| Work profiles | `/profile explore|build|review` | Applies a lower-output exploration mode, a build mode, or a plan-first review mode. Profiles do not silently change the selected provider or account. |
-| Code review | `/review [path]` | Starts an explicitly read-only model review. It exposes only safe inspection tools: no writes, deletes, moves, or shell-command execution. |
-| Privacy cleanup | `/privacy` | Displays local session, history, and log locations. `/privacy clear logs|sessions|history|all` requests confirmation before deletion. |
-| Shell completion | `/completion bash|zsh|fish` | Prints a basic completion definition for common launch options. |
-
-### Self-update from trusted source
-
-Use `/update` to check the active Miss Data source checkout against the trusted official repository. Use `/update apply` to fast-forward it after a separate confirmation. The updater refuses arbitrary remotes, detached checkouts, dirty source trees, merges, and overwrites; it only runs a Git fast-forward update from `https://github.com/RootedMani/Miss-Data.git`. After an update, restart Miss Data. If the update changed dependencies, run `pip install -r requirements.txt` from the Miss Data source directory.
-
-A natural-language request such as “update yourself” is also routed through the restricted update tool. It checks first and asks the user before applying an update. The update mechanism never accepts an arbitrary repository URL or executes provider-supplied shell commands.
-
-> **Local data note.** Saved sessions contain conversation messages so that they can be resumed. Treat `~/.config/missdata/sessions/` as sensitive local data, like the existing logs directory. Use `/privacy` if the records should be removed.
-
-The full command and safety reference is maintained in [DOCUMENTATION.md](DOCUMENTATION.md).
-
-### Portable settings backup
-
-Use `/export-config [path]` to create a small, portable JSON backup of **settings only**. It includes provider/model preferences, recovery policies, budget and work-profile settings, sandbox/approval configuration, and fallback order. It deliberately excludes API keys, `.env` values, logs, prompt history, and saved conversations. Use `/import-config <path>` to inspect and apply a compatible backup after confirmation. If an imported provider cannot initialize with the keys on the new machine, the existing settings remain active.

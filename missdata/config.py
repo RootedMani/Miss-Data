@@ -121,6 +121,7 @@ OPENAI_COMPATIBLE_PRESETS: dict[str, dict[str, str]] = {
 }
 
 APPROVAL_MODES = ("always", "risky", "auto")
+EXECUTION_MODES = ("direct", "plan")
 # Recovery after a context/token-limit error: ask before compacting by default,
 # compact immediately when explicitly configured to auto, or disable recovery.
 CONTEXT_RECOVERY_MODES = ("ask", "auto", "off")
@@ -128,6 +129,11 @@ CONTEXT_RECOVERY_MODES = ("ask", "auto", "off")
 OLLAMA_RECOVERY_MODES = ("ask", "auto", "off")
 # Budget profiles only cap generated output. They do not represent provider
 # pricing and do not change a provider/model unless the user changes it.
+WORK_PROFILES = {
+    "explore": {"budget": "economy", "mode": "direct"},
+    "build": {"budget": "thorough", "mode": "direct"},
+    "review": {"budget": "balanced", "mode": "plan"},
+}
 BUDGET_PROFILES = {
     "economy": 768,
     "balanced": 2048,
@@ -160,11 +166,14 @@ class Settings:
     custom_model: str = ""
     custom_api_key_env: str = "CUSTOM_API_KEY"
     approval_mode: str = "risky"   # always | risky | auto
+    # In plan mode, show a concise approach and wait for /approve before work.
+    execution_mode: str = "direct"  # direct | plan
     sandbox_mode: bool = True      # confine file tools to cwd + block dangerous commands
     language: str = "en"           # en | fa  (affects a few UI strings)
     max_output_tokens: int = 4096
     # A named response-size cap for predictable, budget-conscious sessions.
     budget_profile: str = "thorough"  # economy | balanced | thorough | custom
+    work_profile: str = "build"  # explore | build | review | custom
     # How an oversized conversation is reduced before retrying the same request.
     context_recovery: str = "ask"  # ask | auto | off
     # Repair a stopped local Ollama service or missing model before failover.
@@ -217,6 +226,35 @@ class Settings:
             self.openai_compatible_models[self.provider] = value
         else:
             self.anthropic_model = value
+
+
+def export_settings(path: Path, settings: Settings) -> Path:
+    """Write a portable settings-only backup; credentials and sessions are excluded."""
+    payload = {
+        "format": "missdata-settings-backup",
+        "version": 1,
+        "settings": asdict(settings),
+    }
+    path = path.expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return path
+
+
+def import_settings(path: Path) -> Settings:
+    """Read a validated settings-only backup without importing API credentials."""
+    payload = json.loads(path.expanduser().read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("format") != "missdata-settings-backup" or payload.get("version") != 1:
+        raise ValueError("Not a compatible Miss Data settings backup.")
+    raw = payload.get("settings")
+    if not isinstance(raw, dict):
+        raise ValueError("Backup has no valid settings payload.")
+    known = {key: value for key, value in raw.items() if key in Settings.__dataclass_fields__}
+    return Settings(**known)
 
 
 def ensure_dirs() -> None:
@@ -331,6 +369,24 @@ def save_api_keys(provider: str, keys: list[str]) -> None:
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     for var_name, value in replacements.items():
         os.environ[var_name] = value
+
+
+def delete_api_keys(provider: str) -> None:
+    """Remove a provider's stored key pool, including legacy key state."""
+    single_key_env = _api_key_env_var(provider)
+    if not single_key_env:
+        raise ValueError(f"Provider '{provider}' does not use an API key.")
+    ensure_dirs()
+    env_path = CONFIG_DIR / ".env"
+    pool_env = _key_pool_env_var(single_key_env)
+    if env_path.exists():
+        retained = [
+            line for line in env_path.read_text(encoding="utf-8").splitlines()
+            if not line.startswith(f"{single_key_env}=") and not line.startswith(f"{pool_env}=")
+        ]
+        env_path.write_text("\\n".join(retained) + ("\\n" if retained else ""), encoding="utf-8")
+    os.environ.pop(single_key_env, None)
+    os.environ.pop(pool_env, None)
 
 
 def save_api_key(provider: str, key: str) -> None:

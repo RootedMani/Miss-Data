@@ -15,6 +15,7 @@ from .activity import ActivityLogger
 from .config import OPENAI_COMPATIBLE_PRESETS, Settings, get_api_key, get_api_keys
 from .ollama_recovery import diagnose_ollama_error, repair_ollama
 from .providers import ProviderError, ToolCall, make_provider
+from .sessions import new_session_id
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "system_prompt.md"
 
@@ -60,6 +61,9 @@ class Agent:
         self._marker_shown = False  # has "Miss Data ›" been printed for the current turn yet?
         self._suppress_stream_output = False  # internal compaction summary, never user-facing
         self._tool_calls_completed = 0
+        self.pending_request: str | None = None
+        self.session_id = new_session_id()
+        self.session_title = "Untitled session"
         self._init_provider()
         self._reset_system_message()
         self.logger.event(
@@ -595,10 +599,61 @@ class Agent:
         )
         return candidate if approved else None
 
-    # -- main turn loop ------------------------------------------------------
+    # -- planning / main turn loop ------------------------------------------
 
-    def run_turn(self, user_input: str) -> None:
-        self.messages.append(self._provider.make_user_message(user_input))
+    def propose_plan(self, user_input: str) -> bool:
+        """Generate a no-tool plan and keep the request pending for approval."""
+        if self._provider is None:
+            ui.print_error("No usable active provider is configured; cannot create a plan.")
+            return False
+        planning_instruction = (
+            "Create a concise implementation plan for the request below. Do not call tools, "
+            "do not claim work is complete, and do not make changes. State likely files/areas, "
+            "validation steps, risks or assumptions, and ask for approval to proceed.\n\n"
+            f"User request: {user_input}"
+        )
+        proposal = self._provider.make_user_message(planning_instruction)
+        self._marker_shown = False
+        self._spinner.start()
+        self.logger.event("plan_requested", user_input=user_input, provider=self.settings.provider)
+        try:
+            result = self._provider.stream_turn(self.messages + [proposal], [])
+        except KeyboardInterrupt:
+            self._spinner.stop()
+            print()
+            ui.print_info("Plan generation stopped safely; no request is pending.")
+            self.logger.event("plan_cancelled", provider=self.settings.provider)
+            return False
+        except ProviderError as error:
+            self._spinner.stop()
+            ui.print_error(str(error))
+            self.logger.event("plan_failed", provider=self.settings.provider, error=str(error))
+            return False
+        finally:
+            self._spinner.stop()
+        print()
+        self.pending_request = user_input
+        self.logger.event("plan_presented", plan=result.text, provider=self.settings.provider)
+        ui.print_info("Plan ready. Use `/approve` to execute it, or `/reject` to discard it.")
+        return True
+
+    def discard_pending_request(self) -> bool:
+        if self.pending_request is None:
+            return False
+        self.logger.event("plan_rejected", user_input=self.pending_request)
+        self.pending_request = None
+        return True
+
+    def run_turn(self, user_input: str, read_only: bool = False) -> None:
+        if self._provider is None:
+            ui.print_error(
+                f"No usable credentials are configured for active provider '{self.settings.provider}'. "
+                "Add a key with `/keys add <provider>` or switch provider."
+            )
+            self.logger.event("turn_blocked", reason="missing_active_provider_credentials", provider=self.settings.provider)
+            return
+        current_user_message = self._provider.make_user_message(user_input)
+        self.messages.append(current_user_message)
         self._touched_files = set()
         self._marker_shown = False
         self._tool_calls_completed = 0
@@ -614,10 +669,16 @@ class Agent:
         }
         self.logger.event(
             "turn_started", user_input=user_input, provider=self.settings.provider,
-            model=self.settings.model,
+            model=self.settings.model, read_only=read_only,
         )
 
         max_iterations = 25  # guard against runaway tool-call loops
+        available_tools = [
+            schema for schema in tools.TOOL_SCHEMAS
+            if not read_only or schema["name"] in tools.READ_ONLY_TOOLS
+        ]
+        if not read_only:
+            available_tools.append(REMEMBER_FACT_SCHEMA)
         for iteration in range(max_iterations):
             self._spinner.start()
             self.logger.event(
@@ -626,7 +687,23 @@ class Agent:
                 api_key_fingerprint=ActivityLogger.key_fingerprint(self._active_api_key),
             )
             try:
-                result = self._provider.stream_turn(self.messages, tools.TOOL_SCHEMAS + [REMEMBER_FACT_SCHEMA])
+                result = self._provider.stream_turn(self.messages, available_tools)
+            except KeyboardInterrupt:
+                self._spinner.stop()
+                # Providers only append completed assistant turns after a
+                # successful stream. Remove the current user message too, so
+                # conversation history never contains an orphaned request.
+                try:
+                    self.messages.remove(current_user_message)
+                except ValueError:
+                    pass
+                print()
+                ui.print_info("Response stopped safely. Partial output was not saved to conversation; you can rephrase or retry the request.")
+                self.logger.event(
+                    "turn_cancelled", provider=self.settings.provider,
+                    iteration=iteration + 1, tool_actions_completed=self._tool_calls_completed,
+                )
+                return
             except ProviderError as error:
                 self._spinner.stop()
                 failed_provider = self.settings.provider

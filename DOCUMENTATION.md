@@ -103,12 +103,21 @@ When a provider fails, the agent first tries unused keys from the same pool. It 
 | Command | Effect |
 |---|---|
 | `/keys` | Displays key counts without printing key values. |
+| `/keys show <provider>` | Shows numbered key slots as masked values plus diagnostic fingerprints. |
+| `/keys show <provider> reveal` | Asks for separate confirmation, then prints full keys to the local terminal. |
 | `/keys add <provider>` | Appends one or more keys to the selected provider pool. |
+| `/keys replace <provider>` | Replaces the selected provider’s complete key pool using hidden input. |
+| `/keys edit <provider> <number>` | Replaces one numbered key slot using hidden input. |
+| `/keys remove <provider> <number>` | Removes one numbered key slot after confirmation; the final removal clears that provider’s stored credentials. |
 | `/fallback` | Displays the offered fallback order. |
 | `/fallback set groq,openai,anthropic` | Stores a new fallback-offer order. |
 | `/fallback off` | Disables cross-provider offers while keeping same-provider key rotation. |
 
 Cross-provider changes always require approval in an interactive session. Non-interactive `--prompt` mode does not silently switch companies.
+
+### Secure credential editor
+
+The terminal key editor treats credentials as sensitive data. `show` is masked by default: it exposes only a small identifying prefix/suffix and a one-way fingerprint, making it practical to distinguish duplicate or expired slots without exposing full values. The `reveal` form requires a second explicit confirmation because a printed key can persist in terminal scrollback, screen recordings, shell logs, or shared sessions. Add, replace, and edit prompts use hidden input, and no key material is written to the activity log. Removing a final key clears both the pooled and backwards-compatible single-key configuration values. If the active provider’s pool changes, Miss Data refreshes that provider immediately; if the final active key is removed, a clear preflight message prevents the next request from failing obscurely.
 
 ## 6. Budget profiles and no-cost workspace awareness
 
@@ -205,11 +214,24 @@ Each agent session writes newline-delimited JSON to a local log file. The startu
 
 The logger redacts fields and values that look like API keys, tokens, passwords, authorization headers, cookies, or known secret environment values. It retains one-way key fingerprints for retry diagnostics. Because activity logs can contain user prompts, model outputs, and tool results, treat the log directory as sensitive local data. Session files request user-only permissions on operating systems that support POSIX file modes.
 
-## 12. Interactive command reference
+## 12. Stopping an active response safely
+
+Press **Ctrl+C once** while the provider is thinking or streaming a response. Miss Data stops the active provider stream, stops the visual spinner, and records a `turn_cancelled` event in the redacted activity log. Text that was already printed stays visible to the user, but the partial assistant response and matching unfinished user request are deliberately not stored in conversation history. This avoids an orphaned half-turn and ensures that the next prompt starts from the last complete exchange. Cancellation is treated as a user action, not a provider failure, so it does not trigger key rotation, provider failover, context compaction, or Ollama repair.
+
+This command is intended for an active model stream, not a currently running local tool process. Tool actions retain their existing sandbox, timeout, and approval behavior.
+
+## 13. Terminal editing and command history
+
+Interactive TTY sessions use `prompt_toolkit` to provide a consistent line editor across Linux and other supported terminals. Normal left/right cursor movement, backspace/delete within the current line, history recall with up/down arrows, and history search are available inside Miss Data instead of depending on shell-specific input handling. Colored terminal prompts are wrapped in the editor’s ANSI-aware formatter, which prevents raw control sequences such as `^[` from appearing as visible text. Accepted commands are persisted to the user configuration directory at `history`, alongside settings and logs. Empty or interrupted input lines are discarded.
+
+If the session is non-interactive, input/output is redirected, or the editor cannot initialize, Miss Data falls back to ordinary standard input so scripting remains compatible. Install the declared project dependencies to enable the enhanced editor after an upgrade.
+
+## 14. Interactive command reference
 
 | Command | Description |
 |---|---|
 | `/help` | Display in-program command help. |
+| `Ctrl+C` while generating | Stops an active provider response safely without saving an incomplete conversation turn. |
 | `/status` | Show active provider, model, response cap, safety settings, recovery policies, fallback order, and log path. |
 | `/doctor` | Run no-model-cost configuration and local Ollama-health diagnostics. |
 | `/changes` | Show a read-only Git worktree and diff-statistics summary. |
@@ -218,6 +240,9 @@ The logger redacts fields and values that look like API keys, tokens, passwords,
 | `/provider <name>` | Switch provider; conversation resets after a successful switch. |
 | `/model <name>` | Set the selected model for the current provider. |
 | `/ollama-url <url>` | Display or update the Ollama server URL. |
+| `/keys show <provider> [reveal]` | Inspects key slots masked by default; reveal only after separate confirmation. |
+| `/keys add\|replace <provider>` | Adds to or replaces a provider key pool using hidden input. |
+| `/keys edit\|remove <provider> <number>` | Updates or deletes one numbered key slot. |
 | `/ollama-recovery <ask|auto|off>` | Configure local Ollama server/model repair. |
 | `/gpu-layers <n>|auto` | Override the Ollama GPU layer count or restore automatic selection. |
 | `/base-url <url>` | Configure a custom compatible endpoint. |
@@ -232,7 +257,7 @@ The logger redacts fields and values that look like API keys, tokens, passwords,
 | `/sandbox <on|off>` | Set sandbox mode. |
 | `/lang <en|fa>` | Set assistant response language. |
 
-## 13. Troubleshooting guide
+## 15. Troubleshooting guide
 
 | Symptom | Likely cause | Recommended resolution |
 |---|---|---|
@@ -245,7 +270,7 @@ The logger redacts fields and values that look like API keys, tokens, passwords,
 | Custom provider has no base URL | Custom endpoint was selected without endpoint configuration. | Set `/base-url https://example.com/v1`, choose a model, and set a key variable. |
 | File action is blocked | Sandbox blocks a path outside the working directory or a dangerous command. | Use `/cwd` to choose the appropriate project root, review the action, or disable sandbox only in a trusted environment. |
 
-## 14. Development and testing
+## 16. Development and testing
 
 The repository includes unit tests for provider behavior, tool behavior, conversation compaction, key-pool resilience, context-limit recovery, logging redaction, and Ollama repair policy. Run the suites from the project root after installing dependencies.
 
@@ -259,7 +284,7 @@ The project uses standard-library networking for Ollama and generic OpenAI-compa
 
 When changing resilience behavior, add tests for both success and refusal cases. Recovery tests should mock process launch or model download; they must not start a real server or download a real model during unit testing.
 
-## 15. Operational checklist
+## 17. Operational checklist
 
 Before relying on the program for local development work, verify the active provider, model, working directory, sandbox mode, approval mode, key-pool count, and recovery policies. Review the session log location at startup. For Ollama, ensure the configured URL is local if you expect self-repair, and use the `ask` mode until you intentionally want unattended local server starts or model downloads.
 
@@ -276,7 +301,84 @@ Before relying on the program for local development work, verify the active prov
 | Context recovery | `/context-recovery` |
 | Ollama repair policy | `/ollama-recovery` |
 | Session log | `/logs` |
+| Active response stop | `Ctrl+C` while generating |
+| Secure credential management | `/keys show`, `/keys add`, `/keys replace`, `/keys edit`, `/keys remove` |
 
-## 16. Licensing and support files
+## 18. Licensing and support files
 
 Project metadata, dependencies, and licensing information are maintained in `pyproject.toml`. The system instructions used by the model are packaged from `missdata/system_prompt.md`. Update this document alongside public behavior changes so command descriptions, safety guarantees, configuration names, and recovery policies remain accurate.
+
+
+## 19. Local-first workflow suite
+
+The workflow suite is intended to make Miss Data practical on constrained API plans and with local models. Its local inspection commands do not send source files to a provider. Model-backed commands remain opt-in and continue to use the active provider, configured output budget, approval setting, and sandbox boundary.
+
+| Capability | Command | Provider usage | Safeguard |
+|---|---|---:|---|
+| Project map | `/map` | None | Reads local directory markers, manifests, entry points, and test layout only. |
+| Suggested tests | `/test` | None | `/test run <n>` passes through normal command approval. |
+| Context meter | `/context` | None | Labels the result as a character-based approximation, not billing data. |
+| Planned execution | `/mode plan` | One no-tool planning response | A request remains pending until `/approve`; `/reject` discards it. |
+| Diff preview | `/diff [revision]` | None | Read-only Git command output is capped to avoid runaway terminal output. |
+| Checkpoint | `/checkpoint [name]` | None | Explains that all changes are staged and requires confirmation before committing. |
+| Restore | `/restore <revision>` | None | Verifies the revision and requires a hard-restore confirmation. |
+| Session resume | `/sessions`, `/resume <id>` | None | Session files are local and created with user-only permissions where supported. |
+| Read-only review | `/review [path]` | Active model only | The review turn excludes write, delete, move, memory, and shell-command tools. |
+| Privacy cleanup | `/privacy clear ...` | None | Each deletion request requires confirmation. |
+
+### 19.1 Project map, test discovery, and context awareness
+
+`/map` recognizes common Python, Node, Rust, Go, Java, C/C++, Maven, Docker, and Makefile indicators and shows a compact summary rather than traversing known dependency/cache directories. It also surfaces the first detected test command. `/test` lists all compatible common commands discovered from local markers. The user can still direct the model to use a different project-specific command, but `/test run <n>` makes the normal test route visible without spending a model turn.
+
+`/context` is preventative support for provider request limits. It reports characters and a deliberately approximate token conversion using roughly four characters per token. This value is not a context-window guarantee, an API usage report, or a price estimate. It should be used alongside `/compact` and the existing context-limit recovery controls.
+
+### 19.2 Plan-first execution and review
+
+`/mode direct` is the ordinary agent workflow. `/mode plan` performs a no-tool planning pass for a normal user request, retains the original request only in a pending state, and presents the plan. `/approve` sends the original request to the normal agent loop; `/reject` removes the pending request. This provides a low-friction way to inspect likely files, validation, and assumptions before actions begin.
+
+`/profile explore` selects the economy output cap and direct mode for quick questions. `/profile build` selects the thorough cap and direct mode for implementation. `/profile review` selects a balanced cap and plan mode. These profiles intentionally do **not** switch API company, API key, or model; this keeps account and cost decisions explicit. A user can still change provider or model through the existing commands.
+
+`/review [path]` is a model-backed code review path with a reduced tool list. The review may read, list, grep, locate files, check the working directory, locate executables, or use public web search. It cannot write files, edit files, delete/move paths, run a shell command, execute Python, or record memory. The review prompt requests severity-ranked findings covering correctness, security, test coverage, and maintainability.
+
+### 19.3 Git checkpoints, diff, and restore
+
+The Git workflow operates only when the working directory is a Git repository. `/diff` renders a compact file-statistic summary plus a bounded unified diff. `/checkpoint <name>` is explicit because it invokes `git add -A` and creates a local commit; it will never run without confirmation. `/checkpoints` lists recent commits so that a user can inspect their short revisions.
+
+`/restore <revision>` runs a verified `git reset --hard <revision>` only after displaying a hard-loss warning and receiving confirmation. It can destroy uncommitted working-tree changes, so it is deliberately not exposed as a model-side automatic action. Create a checkpoint before broad agent work when an easy rollback point is desired.
+
+### 19.4 Session storage and privacy
+
+Completed turns are saved locally in the Miss Data configuration directory under `sessions/`. A saved session includes a user-selected or generated title, timestamps, provider/model metadata, working directory, log reference, and conversation messages. `/sessions` lists IDs; `/resume <id>` restores the saved provider/model when it can be initialized and rebuilds its system message. The current local working directory is not silently changed when a session resumes.
+
+| Command | Result |
+|---|---|
+| `/session-name <name>` | Renames and saves the active local conversation. |
+| `/new-session` | Saves the active conversation and starts a clean one. |
+| `/delete-session <id>` | Removes one selected saved session after confirmation. |
+| `/privacy` | Shows sessions, prompt history, and log locations. |
+| `/privacy clear logs|sessions|history|all` | Removes selected local data only after confirmation. |
+
+Session persistence does not make local disk encryption, account isolation, or backups automatic. Users should protect their account and device, avoid putting secrets in prompts, and use the privacy cleanup command when a local conversation should not remain available.
+
+### 19.5 Trusted self-update
+
+Miss Data supports `/update` and `/update apply` only when the currently running package is a Git checkout of the trusted `https://github.com/RootedMani/Miss-Data.git` repository. A status check fetches only the configured trusted remote and compares the active named branch. An apply action is fast-forward only, refuses a dirty worktree, refuses detached HEAD, does not merge, does not reset source files, and requires a separate confirmation.
+
+The updater does not download code from arbitrary links, accept a remote supplied by an AI model, install dependencies automatically, or update a project in the agent’s working directory. It updates only the Miss Data source checkout. Restart the program after a successful update. If the source’s declared dependencies changed, manually run `pip install -r requirements.txt` in the source checkout after reviewing the change.
+
+Natural-language update requests may use the restricted `update_missdata` agent tool. That tool is marked risky, checks the trusted source first, and the system instruction requires a fresh explicit user confirmation before an apply action. Users can always use the more transparent `/update` path directly.
+
+### 19.6 Shell completion
+
+`/completion bash`, `/completion zsh`, and `/completion fish` print a small shell-specific completion definition for common launch flags. Redirect the result into the appropriate shell completion file if desired. The command prints text only; it does not modify shell startup files.
+
+## 20. Migration guidance
+
+Existing settings remain compatible. New `execution_mode` and `work_profile` settings use `direct` and `build` defaults respectively. No existing API key, provider, or log configuration is changed. Sessions begin being saved after this version’s completed turns; older activity logs remain unaffected. Install any new declared dependencies after updating from source, then restart the program.
+
+
+### 20.1 Portable settings backup
+
+`/export-config [path]` creates a portable JSON document with format marker `missdata-settings-backup` and version `1`. The document contains only the serializable `Settings` fields: selected provider/model preferences, safety and recovery policies, output budget/work profile, language, sandbox choice, custom-endpoint settings, and fallback order. API keys and key pools are stored separately and are never read into the backup. Logs, saved sessions, terminal history, memory, and project files are also excluded.
+
+`/import-config <path>` validates the format/version and previews the imported provider, model, budget, and execution mode. It asks for confirmation before applying. The application then attempts to initialize the imported provider using keys that already exist on the current machine. If initialization fails, all prior settings are restored and the imported configuration is not saved. This prevents a backup from silently leaving an active session pointed at an unusable provider.

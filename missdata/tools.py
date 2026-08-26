@@ -40,7 +40,7 @@ MAX_GREP_RESULTS = 300
 MAX_GREP_FILES_SCANNED = 2000
 
 # Tool names considered "risky" -> require approval unless mode == auto
-RISKY_TOOLS = {"write_file", "edit_file", "delete_path", "run_command", "make_dir", "move_path", "run_python"}
+RISKY_TOOLS = {"write_file", "edit_file", "delete_path", "run_command", "make_dir", "move_path", "run_python", "update_missdata"}
 READ_ONLY_TOOLS = {"read_file", "list_dir", "search_files", "grep", "get_cwd", "which", "web_search"}
 
 # Tools that mutate the filesystem, and which of their args are the affected
@@ -575,6 +575,28 @@ def run_python(args: dict, cwd: str, *, sandbox_root: str | None = None, sandbox
     return "\n".join(parts)
 
 
+def update_missdata(args: dict, cwd: str, *, sandbox_root: str | None = None,
+                    sandbox_enabled: bool = True) -> str:
+    """Check or apply a trusted fast-forward Miss Data source update.
+
+    The project cwd is deliberately ignored: the update target is the source
+    tree that contains the running Miss Data package, and workflows validates
+    it against the official repository before any Git action.
+    """
+    from .workflows import apply_update, missdata_root, update_status
+
+    action = str(args.get("action", "check")).lower()
+    if action == "check":
+        ok, detail = update_status(missdata_root())
+    elif action == "apply":
+        ok, detail = apply_update(missdata_root())
+        if ok:
+            detail += "\nRestart Miss Data. If dependencies changed, run `pip install -r requirements.txt` in its source directory."
+    else:
+        return "Error: action must be 'check' or 'apply'."
+    return detail if ok else "Error: " + detail
+
+
 # ---------------------------------------------------------------------------
 # Tool schema (OpenAI/Groq-style function-calling format; converted for
 # Anthropic in providers.py)
@@ -732,6 +754,17 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "update_missdata",
+        "description": "Check or apply a self-update for Miss Data from its trusted official Git source. Apply is RISKY: it fast-forwards only when the source tree is clean and must be approved. Never use arbitrary URLs or repositories.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["check", "apply"], "description": "Use check to preview status or apply to fast-forward the trusted source."},
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "web_search",
         "description": "Search the public web for current information and return result titles and URLs. Uses the Brave Search API if BRAVE_API_KEY is set, otherwise falls back to DuckDuckGo; never search for secrets or private source code.",
         "parameters": {
@@ -760,6 +793,7 @@ TOOL_IMPLEMENTATIONS = {
     "get_cwd": get_cwd,
     "which": which,
     "web_search": web_search,
+    "update_missdata": update_missdata,
 }
 
 
@@ -786,6 +820,8 @@ def describe_call(name: str, args: dict) -> str:
         return f"Search file contents for '{args.get('query')}' in {args.get('path', '.')}"
     if name == "run_command":
         return f"Run: {args.get('command')}"
+    if name == "update_missdata":
+        return f"Self-update Miss Data ({args.get('action', 'check')})"
     if name == "run_python":
         code = args.get("code", "")
         preview = code if len(code) <= 60 else code[:57] + "..."
