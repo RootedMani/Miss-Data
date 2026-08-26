@@ -13,11 +13,6 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from __future__ import annotations
-
-import math
-from typing import Any
-
 __all__ = ["is_fibonacci", "is_in_fibonacci"]
 
 def is_in_fibonacci(n: int | float) -> bool:
