@@ -126,6 +126,13 @@ APPROVAL_MODES = ("always", "risky", "auto")
 CONTEXT_RECOVERY_MODES = ("ask", "auto", "off")
 # Starting a local server or downloading a model is opt-in by default.
 OLLAMA_RECOVERY_MODES = ("ask", "auto", "off")
+# Budget profiles only cap generated output. They do not represent provider
+# pricing and do not change a provider/model unless the user changes it.
+BUDGET_PROFILES = {
+    "economy": 768,
+    "balanced": 2048,
+    "thorough": 4096,
+}
 PROVIDERS = ("groq", "anthropic", "ollama", *OPENAI_COMPATIBLE_PRESETS.keys(), "custom")
 # This order is used only to *offer* a different provider after the active one
 # cannot complete a request. The user must approve every company switch.
@@ -156,6 +163,8 @@ class Settings:
     sandbox_mode: bool = True      # confine file tools to cwd + block dangerous commands
     language: str = "en"           # en | fa  (affects a few UI strings)
     max_output_tokens: int = 4096
+    # A named response-size cap for predictable, budget-conscious sessions.
+    budget_profile: str = "thorough"  # economy | balanced | thorough | custom
     # How an oversized conversation is reduced before retrying the same request.
     context_recovery: str = "ask"  # ask | auto | off
     # Repair a stopped local Ollama service or missing model before failover.

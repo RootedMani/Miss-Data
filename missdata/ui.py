@@ -37,13 +37,16 @@ BANNER = r"""
 """
 
 
-def print_banner(provider: str, model: str, cwd: str, sandbox_mode: bool = True) -> None:
+def print_banner(provider: str, model: str, cwd: str, sandbox_mode: bool = True,
+                 budget_profile: str | None = None, max_output_tokens: int | None = None) -> None:
     width = shutil.get_terminal_size(fallback=(80, 24)).columns
     print(magenta(BANNER))
     print(cyan("  Miss Data") + dim("  •  ") + "خانم داده" + dim("  —  terminal coding agent"))
     print(dim("  " + "─" * min(60, width - 2)))
     print(f"  {dim('provider:')} {bold(provider)}   {dim('model:')} {bold(model)}")
     print(f"  {dim('cwd:')} {cwd}")
+    if budget_profile and max_output_tokens is not None:
+        print(f"  {dim('budget:')} {bold(budget_profile)} {dim(f'({max_output_tokens} max output tokens)')}")
     if sandbox_mode:
         print(f"  {dim('sandbox:')} {green('on')} {dim('(file tools confined to cwd, dangerous commands blocked)')}")
     else:
@@ -67,6 +70,10 @@ def print_files_summary(paths: list[str]) -> None:
 def print_help() -> None:
     rows = [
         ("/help", "Show this help"),
+        ("/status", "Show provider, model, budget, safeguards, recovery, and log status"),
+        ("/doctor", "Run no-cost provider and workspace diagnostics"),
+        ("/changes", "Show a read-only Git working-tree summary"),
+        ("/budget <profile|tokens>", "Cap output for economy (768), balanced (2048), thorough (4096), or custom use"),
         ("/exit, /quit", "Exit Miss Data"),
         ("/clear", "Clear the current conversation (keeps memory facts)"),
         ("/compact [n]", "Summarize older turns into one note to shrink context (keep n recent turns verbatim)"),

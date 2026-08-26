@@ -12,9 +12,10 @@ from . import memory, ui
 from .activity import ActivityLogger
 from .agent import Agent
 from .config import (
-    APPROVAL_MODES, CONTEXT_RECOVERY_MODES, OLLAMA_RECOVERY_MODES, OPENAI_COMPATIBLE_PRESETS, PROVIDERS, Settings, ensure_dirs,
+    APPROVAL_MODES, BUDGET_PROFILES, CONTEXT_RECOVERY_MODES, OLLAMA_RECOVERY_MODES, OPENAI_COMPATIBLE_PRESETS, PROVIDERS, Settings, ensure_dirs,
     get_api_key, get_api_keys, load_env, save_api_keys,
 )
+from .insights import format_project_change_summary, ollama_health, project_change_summary
 from .providers import ProviderError
 
 
@@ -102,6 +103,80 @@ def handle_slash_command(cmd: str, agent: Agent, settings: Settings) -> bool:
 
     if name == "/help":
         ui.print_help()
+
+    elif name == "/status":
+        active_keys = len(get_api_keys(settings.provider)) if settings.provider != "ollama" else 0
+        key_text = "local provider (no key)" if settings.provider == "ollama" else f"{active_keys} configured key(s)"
+        print(ui.bold("\nSession status:"))
+        print(f"  Provider: {settings.provider}   Model: {settings.model}")
+        print(f"  Budget: {settings.budget_profile} ({settings.max_output_tokens} maximum output tokens per response)")
+        print(f"  Credentials: {key_text}")
+        print(f"  Working directory: {agent.cwd}")
+        print(f"  Safeguards: approval={settings.approval_mode}, sandbox={'on' if settings.sandbox_mode else 'OFF'}")
+        print(f"  Recovery: context={settings.context_recovery}, ollama={settings.ollama_recovery}")
+        print(f"  Fallback: {' → '.join(settings.fallback_providers) if settings.fallback_providers else 'off'}")
+        print(f"  Log: {agent.logger.path}\n")
+
+    elif name == "/changes":
+        summary = project_change_summary(agent.cwd)
+        print(ui.bold("\nProject changes:"))
+        print(format_project_change_summary(summary))
+        print()
+        agent.logger.event(
+            "project_changes_requested", is_repository=summary.is_repository,
+            changed_files=summary.changed_files, staged_files=summary.staged_files,
+            untracked_files=summary.untracked_files,
+        )
+
+    elif name == "/doctor":
+        print(ui.bold("\nDiagnostic report:"))
+        if settings.provider == "ollama":
+            health = ollama_health(settings.ollama_base_url, settings.ollama_model)
+            print("  " + health.detail)
+            if not health.reachable:
+                print("  On your next request, Ollama self-repair can offer to start the local server.")
+            elif health.model_available is False:
+                print("  On your next request, Ollama self-repair can offer to download the configured model.")
+            print(f"  Ollama recovery policy: {settings.ollama_recovery}")
+        elif settings.provider == "custom" and not settings.custom_base_url:
+            print("  Custom provider needs a base URL. Use `/base-url <https://...>`.")
+        elif settings.provider != "ollama" and not get_api_key(settings.provider):
+            print(f"  No API key is configured for {settings.provider}. Use `/keys add {settings.provider}`.")
+        else:
+            print("  Active provider configuration appears complete.")
+        print(f"  Budget profile: {settings.budget_profile} ({settings.max_output_tokens} output-token cap)")
+        print(f"  Workspace: {agent.cwd}  |  Sandbox: {'on' if settings.sandbox_mode else 'OFF'}")
+        print()
+        agent.logger.event("doctor_requested", provider=settings.provider)
+
+    elif name == "/budget":
+        choice = rest.strip().lower()
+        if not choice:
+            profiles = ", ".join(f"{name}={limit}" for name, limit in BUDGET_PROFILES.items())
+            ui.print_info(
+                f"Budget is '{settings.budget_profile}' ({settings.max_output_tokens} max output tokens). "
+                f"Profiles: {profiles}. Use `/budget <profile|tokens>`."
+            )
+        elif choice in BUDGET_PROFILES:
+            settings.budget_profile = choice
+            settings.max_output_tokens = BUDGET_PROFILES[choice]
+            settings.save()
+            ui.print_info(f"Budget profile set to '{choice}' ({settings.max_output_tokens} maximum output tokens).")
+            agent.logger.event("budget_profile_updated", profile=choice, max_output_tokens=settings.max_output_tokens)
+        else:
+            try:
+                limit = int(choice)
+            except ValueError:
+                ui.print_error("Usage: /budget <economy|balanced|thorough|128-16384>")
+            else:
+                if not 128 <= limit <= 16384:
+                    ui.print_error("Custom output-token limit must be between 128 and 16384.")
+                else:
+                    settings.budget_profile = "custom"
+                    settings.max_output_tokens = limit
+                    settings.save()
+                    ui.print_info(f"Custom output cap set to {limit} tokens per response.")
+                    agent.logger.event("budget_profile_updated", profile="custom", max_output_tokens=limit)
 
     elif name == "/clear":
         agent.clear_conversation()
@@ -378,7 +453,10 @@ def repl(settings: Settings, cwd: str | None) -> None:
         ui.print_error(f"Failed to start: {e}")
         sys.exit(1)
 
-    ui.print_banner(settings.provider, settings.model, agent.cwd, sandbox_mode=settings.sandbox_mode)
+    ui.print_banner(
+        settings.provider, settings.model, agent.cwd, sandbox_mode=settings.sandbox_mode,
+        budget_profile=settings.budget_profile, max_output_tokens=settings.max_output_tokens,
+    )
     ui.print_info(f"Session activity log: {agent.logger.path}  (use /logs anytime)")
 
     while True:
@@ -411,6 +489,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--model", help="Model name override for this session")
     parser.add_argument("--base-url", help="API base URL for --provider custom (e.g. https://api.example.com/v1)")
     parser.add_argument("--approval", choices=APPROVAL_MODES, help="Approval mode for this session")
+    parser.add_argument("--budget", choices=tuple(BUDGET_PROFILES),
+                        help="Budget profile that caps generated output: economy, balanced, or thorough")
+    parser.add_argument("--output-tokens", type=int, metavar="N",
+                        help="Custom maximum output tokens per response (128-16384); overrides --budget")
     parser.add_argument("--context-recovery", choices=CONTEXT_RECOVERY_MODES,
                         help="On oversized requests: ask before compacting, compact automatically, or turn recovery off")
     parser.add_argument("--ollama-recovery", choices=OLLAMA_RECOVERY_MODES,
@@ -459,6 +541,14 @@ def main(argv: list[str] | None = None) -> None:
         settings.custom_base_url = args.base_url.rstrip("/")
     if args.approval:
         settings.approval_mode = args.approval
+    if args.budget:
+        settings.budget_profile = args.budget
+        settings.max_output_tokens = BUDGET_PROFILES[args.budget]
+    if args.output_tokens is not None:
+        if not 128 <= args.output_tokens <= 16384:
+            parser.error("--output-tokens must be between 128 and 16384")
+        settings.budget_profile = "custom"
+        settings.max_output_tokens = args.output_tokens
     if args.context_recovery:
         settings.context_recovery = args.context_recovery
     if args.ollama_recovery:

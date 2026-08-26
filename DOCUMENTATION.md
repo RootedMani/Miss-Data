@@ -28,6 +28,8 @@ missdata
 | Run one non-interactive prompt | `missdata -p "summarize this repository"` |
 | Save or replace a provider key pool | `missdata --set-key groq` |
 | Append a provider key | `missdata --add-key groq` |
+| Start an economical output-capped session | `missdata --budget economy` |
+| Set a custom response cap | `missdata --output-tokens 1024` |
 
 On the first interactive run, Miss Data asks for a key for the active provider when necessary. It stores configuration outside the project directory, which avoids accidental commits of credentials.
 
@@ -67,6 +69,7 @@ The application is organized around a small set of responsibilities. The `Agent`
 | `missdata/memory.py` | Persistent remembered facts. |
 | `missdata/activity.py` | Redacted JSONL session logging. |
 | `missdata/ollama_recovery.py` | Local-only Ollama diagnosis, server start, and model-pull repair helpers. |
+| `missdata/insights.py` | No-model-cost Git worktree summaries and local Ollama health checks. |
 | `missdata/ui.py` | Terminal formatting, status output, help, prompts, and spinner. |
 | `missdata/system_prompt.md` | Model instructions, available-tool guidance, and response behavior. |
 
@@ -107,7 +110,22 @@ When a provider fails, the agent first tries unused keys from the same pool. It 
 
 Cross-provider changes always require approval in an interactive session. Non-interactive `--prompt` mode does not silently switch companies.
 
-## 6. Context-limit and token-size recovery
+## 6. Budget profiles and no-cost workspace awareness
+
+The project is designed to be useful with local models and free or limited API tiers. To make response length predictable, a **budget profile** caps generated output tokens without changing the selected provider or model. This is a response-size control rather than a pricing estimate: input context, provider pricing, and tool activity may still affect consumption.
+
+| Profile | Maximum generated output per response | Best use |
+|---|---:|---|
+| `economy` | 768 tokens | Short explanations, focused edits, and limited free tiers. |
+| `balanced` | 2,048 tokens | Everyday implementation and debugging work. |
+| `thorough` | 4,096 tokens | Longer implementation summaries and complex tasks. |
+| `custom` | 128–16,384 tokens | A deliberate project-specific cap. |
+
+Use `/budget economy`, `/budget balanced`, `/budget thorough`, or `/budget 1024` during a session. The equivalent launch options are `--budget <profile>` and `--output-tokens <N>`; a custom number overrides the selected profile. `/status` displays the active cap in a concise session overview.
+
+The project also provides three no-model-cost awareness commands. `/status` prints the provider, model, budget, safeguards, recovery policies, fallback order, key count, and log path. `/doctor` checks only configuration and the local Ollama health endpoint, without generating text or downloading anything. `/changes` uses read-only Git commands without a shell to summarize branch, staged/untracked entries, and diff statistics. These commands help users orient themselves before spending tokens on an agent request.
+
+## 7. Context-limit and token-size recovery
 
 Long conversations can exceed provider request-size, context-window, or token-per-minute limits. Miss Data detects messages such as a Groq `413 Request too large`, context-length error, or a token-size TPM rejection before it rotates keys or offers another provider.
 
@@ -122,7 +140,7 @@ The default context recovery policy is `ask`. After detecting a qualifying error
 
 A single new prompt that is itself too large cannot be reduced safely by deleting prior history. In that case, shorten the new prompt or split the request into smaller instructions.
 
-## 7. Ollama setup and self-repair
+## 8. Ollama setup and self-repair
 
 Ollama is the local-model provider. Its default endpoint is `http://localhost:11434`, and the default model setting is `llama3.2`. Change the endpoint with `/ollama-url` and the model with `/model`.
 
@@ -142,7 +160,7 @@ The default policy is `/ollama-recovery ask`, so the program requests consent be
 
 > **Security note.** The repair workflow never passes a command through a shell. It uses fixed argument lists, does not execute provider-supplied text, and refuses to self-start a service for non-loopback URLs.
 
-## 8. Tool execution, approvals, and sandboxing
+## 9. Tool execution, approvals, and sandboxing
 
 The agent can read, write, edit, move, delete, search, and list files; run commands; run short Python snippets; search the public web; and remember durable facts. The exact tools offered to the model are defined in `tools.py` and passed through provider-specific tool schemas.
 
@@ -164,7 +182,7 @@ The sandbox is enabled by default. It confines file-oriented tools to the config
 | `/clear` | Reset the conversation while retaining remembered facts. |
 | `/compact [n]` | Manually summarize older conversation while retaining `n` recent turns. |
 
-## 9. Memory
+## 10. Memory
 
 The `remember_fact` tool records concise, durable preferences or project facts in `memory.json`. Those facts are inserted into the next system prompt so they remain useful after a conversation reset or provider switch.
 
@@ -175,7 +193,7 @@ The `remember_fact` tool records concise, durable preferences or project facts i
 
 Avoid storing secrets, one-time credentials, or sensitive personal information as remembered facts.
 
-## 10. Activity logs and data handling
+## 11. Activity logs and data handling
 
 Each agent session writes newline-delimited JSON to a local log file. The startup banner prints the current file path, and `/logs` prints it again. Logs capture user requests, provider attempts, key-pool/failover decisions, context and Ollama recovery events, tool requests and results, approvals, errors, and changed files.
 
@@ -187,11 +205,15 @@ Each agent session writes newline-delimited JSON to a local log file. The startu
 
 The logger redacts fields and values that look like API keys, tokens, passwords, authorization headers, cookies, or known secret environment values. It retains one-way key fingerprints for retry diagnostics. Because activity logs can contain user prompts, model outputs, and tool results, treat the log directory as sensitive local data. Session files request user-only permissions on operating systems that support POSIX file modes.
 
-## 11. Interactive command reference
+## 12. Interactive command reference
 
 | Command | Description |
 |---|---|
 | `/help` | Display in-program command help. |
+| `/status` | Show active provider, model, response cap, safety settings, recovery policies, fallback order, and log path. |
+| `/doctor` | Run no-model-cost configuration and local Ollama-health diagnostics. |
+| `/changes` | Show a read-only Git worktree and diff-statistics summary. |
+| `/budget <profile\|tokens>` | Choose `economy`, `balanced`, `thorough`, or a custom output-token cap. |
 | `/exit`, `/quit` | Exit the interactive session. |
 | `/provider <name>` | Switch provider; conversation resets after a successful switch. |
 | `/model <name>` | Set the selected model for the current provider. |
@@ -210,7 +232,7 @@ The logger redacts fields and values that look like API keys, tokens, passwords,
 | `/sandbox <on|off>` | Set sandbox mode. |
 | `/lang <en|fa>` | Set assistant response language. |
 
-## 12. Troubleshooting guide
+## 13. Troubleshooting guide
 
 | Symptom | Likely cause | Recommended resolution |
 |---|---|---|
@@ -223,7 +245,7 @@ The logger redacts fields and values that look like API keys, tokens, passwords,
 | Custom provider has no base URL | Custom endpoint was selected without endpoint configuration. | Set `/base-url https://example.com/v1`, choose a model, and set a key variable. |
 | File action is blocked | Sandbox blocks a path outside the working directory or a dangerous command. | Use `/cwd` to choose the appropriate project root, review the action, or disable sandbox only in a trusted environment. |
 
-## 13. Development and testing
+## 14. Development and testing
 
 The repository includes unit tests for provider behavior, tool behavior, conversation compaction, key-pool resilience, context-limit recovery, logging redaction, and Ollama repair policy. Run the suites from the project root after installing dependencies.
 
@@ -237,13 +259,16 @@ The project uses standard-library networking for Ollama and generic OpenAI-compa
 
 When changing resilience behavior, add tests for both success and refusal cases. Recovery tests should mock process launch or model download; they must not start a real server or download a real model during unit testing.
 
-## 14. Operational checklist
+## 15. Operational checklist
 
 Before relying on the program for local development work, verify the active provider, model, working directory, sandbox mode, approval mode, key-pool count, and recovery policies. Review the session log location at startup. For Ollama, ensure the configured URL is local if you expect self-repair, and use the `ask` mode until you intentionally want unattended local server starts or model downloads.
 
 | Check | Command or location |
 |---|---|
 | Active provider and model | Startup banner or `/provider`, `/model` |
+| Response budget | `/budget` or `/status` |
+| Local diagnostics | `/doctor` |
+| Pending Git changes | `/changes` |
 | Working directory | `/cwd` |
 | Tool safeguards | `/approval`, `/sandbox` |
 | Provider keys | `/keys` |
@@ -252,6 +277,6 @@ Before relying on the program for local development work, verify the active prov
 | Ollama repair policy | `/ollama-recovery` |
 | Session log | `/logs` |
 
-## 15. Licensing and support files
+## 16. Licensing and support files
 
 Project metadata, dependencies, and licensing information are maintained in `pyproject.toml`. The system instructions used by the model are packaged from `missdata/system_prompt.md`. Update this document alongside public behavior changes so command descriptions, safety guarantees, configuration names, and recovery policies remain accurate.

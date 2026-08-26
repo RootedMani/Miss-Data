@@ -22,7 +22,7 @@ This is a CLI tool today; it's built so a web frontend can be layered on top of 
 ### Linux / macOS
 
 ```bash
-git clone https://github.com/RootedMani/Miss-Data
+git clone <this-repo-or-unzip-it>
 cd miss_data
 ./setup.sh
 source .venv/bin/activate
@@ -32,7 +32,7 @@ missdata
 ### Windows
 
 ```bat
-git clone https://github.com/RootedMani/Miss-Data
+git clone <this-repo-or-unzip-it>
 cd miss_data
 setup.bat
 .venv\Scripts\activate
@@ -125,6 +125,8 @@ missdata --provider anthropic     # use Claude for this session
 missdata --provider deepseek      # use DeepSeek for this session
 missdata --model llama-3.3-70b-versatile
 missdata --approval auto          # don't ask for confirmation on risky actions
+missdata --budget economy         # cap generated output at 768 tokens for a lower-cost session
+missdata --output-tokens 1024     # set a custom 128–16384 output-token cap
 missdata --context-recovery auto  # compact context and retry automatically after request-size errors
 missdata --ollama-recovery ask    # ask before starting local Ollama or downloading a missing model
 missdata --sandbox off            # disable the filesystem/command sandbox (see §6a)
@@ -145,6 +147,10 @@ You › create a Flask app with a health check endpoint
 | Command | What it does |
 |---|---|
 | `/help` | Show available commands |
+| `/status` | Show the active provider, model, output budget, safeguards, recovery settings, and log path |
+| `/doctor` | Run no-model-cost provider/workspace diagnostics; checks local Ollama without generating text |
+| `/changes` | Show a read-only Git worktree and diff-statistics summary |
+| `/budget <profile\|tokens>` | Set response cap: `economy` (768), `balanced` (2048), `thorough` (4096), or custom 128–16384 |
 | `/exit`, `/quit` | Exit |
 | `/clear` | Clear the conversation (keeps long-term memory) |
 | `/compact [n]` | Summarize older turns into one note to shrink context; optionally keep the last `n` turns verbatim |
@@ -231,6 +237,7 @@ miss_data/
 │   ├── config.py           # settings + API key storage (cross-platform paths)
 │   ├── activity.py         # structured session logging with secret redaction
 │   ├── ollama_recovery.py  # safe local Ollama server/model repair helpers
+│   ├── insights.py         # no-model-cost Git and local Ollama diagnostics
 │   ├── ui.py               # terminal colors/formatting
 │   └── system_prompt.md    # agent's instructions
 ├── run.py                  # run without installing
