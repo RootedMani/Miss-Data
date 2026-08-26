@@ -9,15 +9,18 @@ import os
 import sys
 
 from . import memory, ui
+from .activity import ActivityLogger
 from .agent import Agent
 from .config import (
     APPROVAL_MODES, OPENAI_COMPATIBLE_PRESETS, PROVIDERS, Settings, ensure_dirs,
-    get_api_key, load_env, save_api_key,
+    get_api_key, get_api_keys, load_env, save_api_keys,
 )
 from .providers import ProviderError
 
 
-def _prompt_for_key(provider: str) -> None:
+def _prompt_for_key(provider: str, append: bool = False,
+                    logger: ActivityLogger | None = None) -> None:
+    """Collect one or more keys. Keys are never echoed, printed, or logged."""
     if provider == "ollama":
         return  # local server, no API key involved
     if provider == "groq":
@@ -33,18 +36,45 @@ def _prompt_for_key(provider: str) -> None:
         label, url = "your custom endpoint", None
     else:
         return
-    print(ui.yellow(f"\nNo {label} API key found ({env_var})."))
+
+    existing = get_api_keys(provider) if append else []
+    pool_var = env_var + "S" if env_var.endswith("_KEY") else env_var + "_KEYS"
+    if existing:
+        print(ui.dim(f"\n{label} already has {len(existing)} configured key(s); new keys will be appended."))
+    else:
+        print(ui.yellow(f"\nNo {label} API key found ({env_var})."))
     if url:
         print(ui.dim(f"Get one at: {url}"))
-    try:
-        key = input(f"Paste your {label} API key (or press Enter to skip): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        key = ""
-    if key:
-        save_api_key(provider, key)
-        print(ui.green("Saved.\n"))
+    print(ui.dim(f"Multiple keys are stored in order in {pool_var}; the next key is tried after a failure."))
+
+    new_keys: list[str] = []
+    while True:
+        try:
+            key = input(f"Paste a {label} API key (or press Enter to finish): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            key = ""
+        if not key:
+            break
+        new_keys.append(key)
+        try:
+            more = input(ui.dim("Add another key? [y/N]: ")).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            more = ""
+        if more not in ("y", "yes"):
+            break
+
+    if new_keys:
+        save_api_keys(provider, existing + new_keys)
+        if logger:
+            logger.event(
+                "api_key_pool_updated", provider=provider,
+                key_count=len(existing) + len(new_keys), operation="append" if append else "replace",
+            )
+        print(ui.green(f"Saved {len(existing) + len(new_keys)} {label} key(s).\n"))
     else:
-        print(ui.dim("Skipped — set it later with `missdata --set-key " + provider + "`.\n"))
+        if logger:
+            logger.event("api_key_pool_update_cancelled", provider=provider, operation="append" if append else "replace")
+        print(ui.dim("Skipped — set keys later with `missdata --set-key " + provider + "`.\n"))
 
 
 def ensure_api_key(settings: Settings) -> bool:
@@ -65,6 +95,7 @@ def handle_slash_command(cmd: str, agent: Agent, settings: Settings) -> bool:
     parts = cmd.strip().split(maxsplit=1)
     name = parts[0].lower()
     rest = parts[1] if len(parts) > 1 else ""
+    agent.logger.event("slash_command", command=name, arguments=rest)
 
     if name in ("/exit", "/quit"):
         return False
@@ -129,6 +160,54 @@ def handle_slash_command(cmd: str, agent: Agent, settings: Settings) -> bool:
                 ui.print_info(f"Working directory: {new_cwd}")
             except FileNotFoundError as e:
                 ui.print_error(str(e))
+
+    elif name in ("/log", "/logs"):
+        ui.print_info(f"Current session log: {agent.logger.path}")
+        ui.print_info("Logs are newline-delimited JSON and remain available after exit.")
+        agent.logger.event("log_path_requested", log_file=str(agent.logger.path))
+
+    elif name == "/keys":
+        tokens = rest.strip().split()
+        if not tokens:
+            print(ui.bold("\nConfigured API-key pools:"))
+            for provider in PROVIDERS:
+                if provider == "ollama":
+                    print(f"  {provider}: local server (no API key)")
+                else:
+                    print(f"  {provider}: {len(get_api_keys(provider))} key(s)")
+            print(ui.dim("Use `/keys add <provider>` to append keys without revealing existing values.\n"))
+        elif len(tokens) == 2 and tokens[0].lower() == "add" and tokens[1].lower() in PROVIDERS:
+            _prompt_for_key(tokens[1].lower(), append=True)
+            agent.logger.event("api_key_pool_updated", provider=tokens[1].lower(), count=len(get_api_keys(tokens[1].lower())))
+        else:
+            ui.print_error("Usage: /keys  or  /keys add <provider>")
+
+    elif name == "/fallback":
+        value = rest.strip()
+        if not value:
+            enabled = settings.fallback_providers
+            if enabled:
+                ui.print_info("Fallback offer order: " + " → ".join(enabled))
+            else:
+                ui.print_info("Cross-provider fallback is disabled; key rotation remains enabled.")
+            ui.print_info("Use `/fallback set groq,openai,anthropic` or `/fallback off`.")
+        elif value.lower() == "off":
+            settings.fallback_providers = []
+            settings.save()
+            ui.print_info("Cross-provider fallback disabled. Multiple keys for the active provider still rotate automatically.")
+            agent.logger.event("fallback_order_updated", providers=[])
+        elif value.lower().startswith("set "):
+            requested = [item.strip().lower() for item in value[4:].replace(",", " ").split() if item.strip()]
+            invalid = [provider for provider in requested if provider not in PROVIDERS]
+            if invalid or not requested:
+                ui.print_error(f"Fallback providers must be valid names: {'|'.join(PROVIDERS)}")
+            else:
+                settings.fallback_providers = list(dict.fromkeys(requested))
+                settings.save()
+                ui.print_info("Fallback offer order set to: " + " → ".join(settings.fallback_providers))
+                agent.logger.event("fallback_order_updated", providers=settings.fallback_providers)
+        else:
+            ui.print_error("Usage: /fallback  |  /fallback set <provider,...>  |  /fallback off")
 
     elif name == "/provider":
         choice = rest.strip().lower()
@@ -260,6 +339,7 @@ def repl(settings: Settings, cwd: str | None) -> None:
         sys.exit(1)
 
     ui.print_banner(settings.provider, settings.model, agent.cwd, sandbox_mode=settings.sandbox_mode)
+    ui.print_info(f"Session activity log: {agent.logger.path}  (use /logs anytime)")
 
     while True:
         try:
@@ -296,7 +376,10 @@ def main(argv: list[str] | None = None) -> None:
                               "commands (default: on). Use 'off' to restore full, unrestricted "
                               "local-dev-tool behavior.")
     parser.add_argument("--set-key", choices=PROVIDERS, metavar="PROVIDER",
-                         help="Prompt for and save an API key for a provider, then exit")
+                        help="Replace a provider's key pool with one or more API keys, then exit")
+    parser.add_argument("--add-key", choices=PROVIDERS, metavar="PROVIDER",
+                        help="Append one or more keys to a provider's existing key pool, then exit")
+
     parser.add_argument("--prompt", "-p", help="Run a single prompt non-interactively and exit")
     parser.add_argument("--version", action="store_true", help="Print version and exit")
 
@@ -312,7 +395,16 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.set_key:
-        _prompt_for_key(args.set_key)
+        logger = ActivityLogger()
+        logger.event("api_key_pool_prompted", provider=args.set_key, operation="replace")
+        _prompt_for_key(args.set_key, logger=logger)
+        logger.close()
+        return
+    if args.add_key:
+        logger = ActivityLogger()
+        logger.event("api_key_pool_prompted", provider=args.add_key, operation="append")
+        _prompt_for_key(args.add_key, append=True, logger=logger)
+        logger.close()
         return
 
     if args.provider:
@@ -330,7 +422,10 @@ def main(argv: list[str] | None = None) -> None:
         if not ensure_api_key(settings):
             ui.print_error("Cannot run without an API key.")
             sys.exit(1)
-        agent = Agent(settings, cwd=args.dir)
+        # --prompt promises non-interactive behavior. Provider changes are
+        # therefore not performed here because every cross-company switch
+        # requires explicit approval from an interactive user.
+        agent = Agent(settings, cwd=args.dir, allow_provider_switch_prompt=False)
         agent.run_turn(args.prompt)
         return
 

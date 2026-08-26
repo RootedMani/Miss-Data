@@ -1,16 +1,14 @@
+"""Compatibility tests retained at the top-level tests package."""
 from __future__ import annotations
 
 import os
-=======
 import unittest
 from unittest.mock import MagicMock, patch
 
+from missdata import tools
 from missdata.agent import build_system_prompt
 from missdata.config import Settings
 from missdata.providers import GroqProvider, ProviderError, normalize_proxy_environment, provider_startup_error
-=======
-from missdata.providers import GroqProvider, ProviderError
-from missdata import tools
 
 
 class _StatusError(Exception):
@@ -75,7 +73,6 @@ class AgentFeatureTests(unittest.TestCase):
         self.assertIn("httpx[socks]", str(error))
         self.assertIn("ALL_PROXY", str(error))
 
-=======
 
 if __name__ == "__main__":
     unittest.main()

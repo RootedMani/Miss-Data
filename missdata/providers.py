@@ -82,10 +82,11 @@ def provider_startup_error(provider: str, error: Exception) -> ProviderError:
 class GroqProvider:
     name = "groq"
 
-    def __init__(self, settings: Settings, on_text: Callable[[str], None] | None = None):
+    def __init__(self, settings: Settings, on_text: Callable[[str], None] | None = None,
+                 api_key: str | None = None):
         from groq import Groq  # local import: only required if this provider is used
 
-        api_key = get_api_key("groq")
+        api_key = api_key or get_api_key("groq")
         if not api_key:
             raise ProviderError(
                 "No Groq API key found. Set GROQ_API_KEY in your environment, "
@@ -261,10 +262,11 @@ class GroqProvider:
 class AnthropicProvider:
     name = "anthropic"
 
-    def __init__(self, settings: Settings, on_text: Callable[[str], None] | None = None):
+    def __init__(self, settings: Settings, on_text: Callable[[str], None] | None = None,
+                 api_key: str | None = None):
         import anthropic  # local import: only required if this provider is used
 
-        api_key = get_api_key("anthropic")
+        api_key = api_key or get_api_key("anthropic")
         if not api_key:
             raise ProviderError(
                 "No Anthropic API key found. Set ANTHROPIC_API_KEY in your environment, "
@@ -525,7 +527,8 @@ class OllamaProvider:
 # ---------------------------------------------------------------------------
 
 class OpenAICompatibleProvider:
-    def __init__(self, settings: Settings, on_text: Callable[[str], None] | None = None):
+    def __init__(self, settings: Settings, on_text: Callable[[str], None] | None = None,
+                 api_key: str | None = None):
         self.settings = settings
         self.on_text = on_text or (lambda s: None)
 
@@ -551,7 +554,7 @@ class OpenAICompatibleProvider:
             self.model = settings.model  # honors any per-provider override, else preset default
             key_env = preset["env_var"]
 
-        api_key = get_api_key(settings.provider)
+        api_key = api_key or get_api_key(settings.provider)
         if not api_key:
             raise ProviderError(
                 f"No {self.label} API key found. Set {key_env} in your environment, "
@@ -696,13 +699,15 @@ class OpenAICompatibleProvider:
         messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
 
 
-def make_provider(settings: Settings, on_text: Callable[[str], None] | None = None):
+def make_provider(settings: Settings, on_text: Callable[[str], None] | None = None,
+                  api_key: str | None = None):
+    """Construct a provider, optionally with one key selected from a key pool."""
     if settings.provider == "groq":
-        return GroqProvider(settings, on_text=on_text)
+        return GroqProvider(settings, on_text=on_text, api_key=api_key)
     if settings.provider == "anthropic":
-        return AnthropicProvider(settings, on_text=on_text)
+        return AnthropicProvider(settings, on_text=on_text, api_key=api_key)
     if settings.provider == "ollama":
         return OllamaProvider(settings, on_text=on_text)
     if settings.provider == "custom" or settings.provider in OPENAI_COMPATIBLE_PRESETS:
-        return OpenAICompatibleProvider(settings, on_text=on_text)
+        return OpenAICompatibleProvider(settings, on_text=on_text, api_key=api_key)
     raise ProviderError(f"Unknown provider: {settings.provider}")

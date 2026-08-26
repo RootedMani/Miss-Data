@@ -11,7 +11,8 @@ import sys
 from pathlib import Path
 
 from . import memory, tools, ui
-from .config import Settings, load_env, save_api_key, get_api_key
+from .activity import ActivityLogger
+from .config import OPENAI_COMPATIBLE_PRESETS, Settings, get_api_key, get_api_keys
 from .providers import ProviderError, ToolCall, make_provider
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "system_prompt.md"
@@ -38,8 +39,10 @@ def build_system_prompt(cwd: str, language: str = "en") -> str:
 
 
 class Agent:
-    def __init__(self, settings: Settings, cwd: str | None = None):
+    def __init__(self, settings: Settings, cwd: str | None = None,
+                 allow_provider_switch_prompt: bool = True):
         self.settings = settings
+        self.allow_provider_switch_prompt = allow_provider_switch_prompt
         self.cwd = str(Path(cwd or os.getcwd()).resolve())
         # The sandbox root is the boundary filesystem tools are confined to
         # when settings.sandbox_mode is True. It tracks cwd (see change_cwd) —
@@ -49,16 +52,31 @@ class Agent:
         self.messages: list[dict] = []
         self.always_approved: set[str] = set()  # tool names approved for "this session"
         self._touched_files: "set[str]" = set()  # files created/edited/deleted/moved this turn
+        self.logger = ActivityLogger()
         self._provider = None
+        self._active_api_key: str | None = None
         self._spinner = ui.ThinkingSpinner()
         self._marker_shown = False  # has "Miss Data ›" been printed for the current turn yet?
+        self._tool_calls_completed = 0
         self._init_provider()
         self._reset_system_message()
+        self.logger.event(
+            "agent_initialized", provider=self.settings.provider, model=self.settings.model,
+            cwd=self.cwd, sandbox_mode=self.settings.sandbox_mode, log_file=str(self.logger.path),
+        )
 
     # -- provider / session management -----------------------------------
 
-    def _init_provider(self) -> None:
-        self._provider = make_provider(self.settings, on_text=self._on_text_chunk)
+    def _init_provider(self, api_key: str | None = None) -> None:
+        """Build the active provider with one selected key from its ordered pool."""
+        self._active_api_key = api_key or get_api_key(self.settings.provider)
+        self._provider = make_provider(
+            self.settings, on_text=self._on_text_chunk, api_key=self._active_api_key,
+        )
+        self.logger.event(
+            "provider_initialized", provider=self.settings.provider, model=self.settings.model,
+            api_key_fingerprint=ActivityLogger.key_fingerprint(self._active_api_key),
+        )
 
     def _ensure_marker_shown(self) -> None:
         """Print the "Miss Data ›" banner at most once per turn, right before
@@ -91,17 +109,32 @@ class Agent:
     def switch_provider(self, provider_name: str) -> None:
         # Message formats (tool-call shape, content blocks) are not
         # compatible across providers, so switching starts a fresh
-        # conversation. Long-term memory (facts) is unaffected.
+        # conversation. Long-term memory (facts) is unaffected. Keep the old
+        # provider intact if construction of the new client fails.
+        previous_provider = self.settings.provider
+        previous_messages = self.messages
+        previous_api_key = self._active_api_key
         self.settings.provider = provider_name
-        self.settings.save()
+        try:
+            self._init_provider()
+        except Exception:
+            self.settings.provider = previous_provider
+            self.messages = previous_messages
+            self._active_api_key = previous_api_key
+            raise
         self.messages = []
-        self._init_provider()
+        self.settings.save()
         self._reset_system_message()
+        self.logger.event(
+            "provider_switched", from_provider=previous_provider, to_provider=provider_name,
+            model=self.settings.model,
+        )
 
     def clear_conversation(self) -> None:
         self.messages = []
         self.always_approved.clear()
         self._reset_system_message()
+        self.logger.event("conversation_cleared")
 
     def compact_context(self, keep_recent_turns: int = 0) -> dict:
         """Shrink the conversation by folding older messages into one summary.
@@ -183,6 +216,7 @@ class Agent:
         self.cwd = str(p)
         self.sandbox_root = self.cwd
         self._reset_system_message()
+        self.logger.event("working_directory_changed", cwd=self.cwd)
         return self.cwd
 
     # -- tool execution with approval gating -------------------------------
@@ -202,19 +236,28 @@ class Agent:
         try:
             args = json.loads(arguments_json) if arguments_json else {}
         except json.JSONDecodeError:
-            return f"Error: could not parse arguments for {name}: {arguments_json!r}"
+            result = f"Error: could not parse arguments for {name}: {arguments_json!r}"
+            self.logger.event("tool_failed", tool=name, reason="invalid_arguments", result=result)
+            return result
 
+        self.logger.event("tool_requested", tool=name, arguments=args, cwd=self.cwd)
         if name == "remember_fact":
             fact = args.get("fact", "").strip()
             if not fact:
-                return "Error: no fact provided."
+                result = "Error: no fact provided."
+                self.logger.event("tool_failed", tool=name, reason="missing_fact", result=result)
+                return result
             memory.add_fact(fact)
             self._reset_system_message()  # keep memory in sync for next turn
-            return f"Remembered: {fact}"
+            result = f"Remembered: {fact}"
+            self.logger.event("tool_completed", tool=name, result=result)
+            return result
 
         impl = tools.TOOL_IMPLEMENTATIONS.get(name)
         if impl is None:
-            return f"Error: unknown tool '{name}'."
+            result = f"Error: unknown tool '{name}'."
+            self.logger.event("tool_failed", tool=name, reason="unknown_tool", result=result)
+            return result
 
         description = tools.describe_call(name, args)
         risky = name in tools.RISKY_TOOLS
@@ -223,8 +266,11 @@ class Agent:
 
         if self._needs_approval(name):
             approved = self._ask_approval_interactive(description)
+            self.logger.event("tool_approval", tool=name, approved=approved, description=description)
             if not approved:
-                return "User declined to approve this action. Do not repeat it; ask the user how they'd like to proceed instead."
+                result = "User declined to approve this action. Do not repeat it; ask the user how they'd like to proceed instead."
+                self.logger.event("tool_declined", tool=name, result=result)
+                return result
 
         try:
             result = impl(
@@ -240,6 +286,11 @@ class Agent:
         if not result.startswith(("Error:", "Unexpected error")):
             self._track_touched_files(name, args)
 
+        self._tool_calls_completed += 1
+        self.logger.event(
+            "tool_completed", tool=name, risky=risky, arguments=args, result=result,
+            touched_files=sorted(self._touched_files),
+        )
         ui.print_tool_result(result)
         return result
 
@@ -262,31 +313,187 @@ class Agent:
             return True
         return answer in ("y", "yes")
 
+    # -- provider resilience -------------------------------------------------
+
+    @staticmethod
+    def _provider_label(provider: str) -> str:
+        if provider == "groq":
+            return "Groq"
+        if provider == "anthropic":
+            return "Anthropic"
+        if provider == "ollama":
+            return "Ollama (local)"
+        if provider == "custom":
+            return "Custom endpoint"
+        return OPENAI_COMPATIBLE_PRESETS.get(provider, {}).get("label", provider)
+
+    def _provider_model(self, provider: str) -> str:
+        if provider == "groq":
+            return self.settings.groq_model
+        if provider == "anthropic":
+            return self.settings.anthropic_model
+        if provider == "ollama":
+            return self.settings.ollama_model
+        if provider == "custom":
+            return self.settings.custom_model
+        preset = OPENAI_COMPATIBLE_PRESETS.get(provider, {})
+        return self.settings.openai_compatible_models.get(provider) or preset.get("default_model", "default")
+
+    def _rotate_to_next_key(self, tried_key_fingerprints: set[str | None]) -> bool:
+        """Rebuild the current provider with the next configured, unused key."""
+        provider = self.settings.provider
+        for index, api_key in enumerate(get_api_keys(provider), start=1):
+            fingerprint = ActivityLogger.key_fingerprint(api_key)
+            if fingerprint in tried_key_fingerprints:
+                continue
+            tried_key_fingerprints.add(fingerprint)
+            self.logger.event(
+                "api_key_rotation_attempted", provider=provider, key_position=index,
+                api_key_fingerprint=fingerprint,
+            )
+            try:
+                self._init_provider(api_key=api_key)
+            except ProviderError as error:
+                self.logger.event(
+                    "api_key_rotation_failed", provider=provider, key_position=index,
+                    api_key_fingerprint=fingerprint, error=str(error),
+                )
+                continue
+            ui.print_info(f"\nRetrying with another configured {self._provider_label(provider)} API key...")
+            self.logger.event(
+                "api_key_rotated", provider=provider, key_position=index,
+                api_key_fingerprint=fingerprint,
+            )
+            return True
+        return False
+
+    def _available_fallback_providers(self, attempted_providers: set[str]) -> list[str]:
+        available: list[str] = []
+        for provider in self.settings.fallback_providers:
+            if provider in attempted_providers:
+                continue
+            if provider == "custom" and not self.settings.custom_base_url:
+                continue
+            if get_api_keys(provider):
+                available.append(provider)
+        return available
+
+    def _ask_provider_failover(self, failed_provider: str, error: ProviderError,
+                               candidates: list[str]) -> str | None:
+        """Ask before switching companies; decline and EOF both mean no switch."""
+        candidate = candidates[0]
+        if not self.allow_provider_switch_prompt:
+            self.logger.event(
+                "provider_switch_not_prompted", from_provider=failed_provider,
+                to_provider=candidate, error=str(error), reason="non_interactive_session",
+            )
+            return None
+        failed_label = self._provider_label(failed_provider)
+        candidate_label = self._provider_label(candidate)
+        note = ""
+        if self._tool_calls_completed:
+            note = (
+                f" This turn already performed {self._tool_calls_completed} tool action(s); "
+                "switching starts a fresh provider conversation and may repeat them."
+            )
+        print()
+        ui.print_info(
+            f"{failed_label} could not complete this request: {error}.{note}"
+        )
+        try:
+            answer = input(
+                ui.yellow(
+                    f"Switch to {candidate_label} ({self._provider_model(candidate)}) and retry your request? [y/N]: "
+                )
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            answer = ""
+        approved = answer in ("y", "yes")
+        self.logger.event(
+            "provider_switch_prompt", from_provider=failed_provider, to_provider=candidate,
+            approved=approved, error=str(error), tool_actions_completed=self._tool_calls_completed,
+        )
+        return candidate if approved else None
+
     # -- main turn loop ------------------------------------------------------
 
     def run_turn(self, user_input: str) -> None:
         self.messages.append(self._provider.make_user_message(user_input))
         self._touched_files = set()
         self._marker_shown = False
+        self._tool_calls_completed = 0
+        attempted_providers: set[str] = {self.settings.provider}
+        tried_keys: dict[str, set[str | None]] = {
+            self.settings.provider: {ActivityLogger.key_fingerprint(self._active_api_key)}
+        }
+        self.logger.event(
+            "turn_started", user_input=user_input, provider=self.settings.provider,
+            model=self.settings.model,
+        )
 
         max_iterations = 25  # guard against runaway tool-call loops
-        for _ in range(max_iterations):
+        for iteration in range(max_iterations):
             self._spinner.start()
+            self.logger.event(
+                "provider_request_started", provider=self.settings.provider, model=self.settings.model,
+                iteration=iteration + 1, message_count=len(self.messages),
+                api_key_fingerprint=ActivityLogger.key_fingerprint(self._active_api_key),
+            )
             try:
                 result = self._provider.stream_turn(self.messages, tools.TOOL_SCHEMAS + [REMEMBER_FACT_SCHEMA])
-            except ProviderError as e:
+            except ProviderError as error:
                 self._spinner.stop()
+                failed_provider = self.settings.provider
+                self.logger.event(
+                    "provider_request_failed", provider=failed_provider, model=self.settings.model,
+                    error=str(error), api_key_fingerprint=ActivityLogger.key_fingerprint(self._active_api_key),
+                )
+                current_tried_keys = tried_keys.setdefault(failed_provider, set())
+                if self._rotate_to_next_key(current_tried_keys):
+                    continue
+
+                candidate = self._ask_provider_failover(
+                    failed_provider, error, self._available_fallback_providers(attempted_providers),
+                ) if self._available_fallback_providers(attempted_providers) else None
+                if candidate:
+                    attempted_providers.add(candidate)
+                    try:
+                        self.switch_provider(candidate)
+                    except ProviderError as switch_error:
+                        self.logger.event(
+                            "provider_switch_failed", from_provider=failed_provider,
+                            to_provider=candidate, error=str(switch_error),
+                        )
+                        # Avoid getting stuck if an alternative is misconfigured.
+                        attempted_providers.add(candidate)
+                        continue
+                    tried_keys[candidate] = {ActivityLogger.key_fingerprint(self._active_api_key)}
+                    self.messages.append(self._provider.make_user_message(user_input))
+                    self._marker_shown = False
+                    ui.print_info(f"Retrying your request with {self._provider_label(candidate)}...")
+                    continue
+
                 self._ensure_marker_shown()
                 print()
-                ui.print_error(str(e))
+                ui.print_error(str(error))
+                self.logger.event("turn_failed", provider=failed_provider, error=str(error))
                 return
             finally:
                 self._spinner.stop()  # no-op if _on_text_chunk already stopped it
 
+            self.logger.event(
+                "provider_response_received", provider=self.settings.provider, text=result.text,
+                tool_calls=[{"name": call.name, "arguments": call.arguments} for call in result.tool_calls],
+            )
             if not result.tool_calls:
                 self._provider.append_assistant_turn(self.messages, result)
                 print()
                 ui.print_files_summary(sorted(self._touched_files))
+                self.logger.event(
+                    "turn_completed", provider=self.settings.provider, answer=result.text,
+                    touched_files=sorted(self._touched_files),
+                )
                 return
 
             self._provider.append_assistant_turn(self.messages, result)
@@ -305,6 +512,7 @@ class Agent:
         self._ensure_marker_shown()
         ui.print_info("\n(Stopped after reaching the maximum number of tool-call steps for one turn.)")
         ui.print_files_summary(sorted(self._touched_files))
+        self.logger.event("turn_stopped", reason="maximum_iterations", touched_files=sorted(self._touched_files))
 
 
 REMEMBER_FACT_SCHEMA = {

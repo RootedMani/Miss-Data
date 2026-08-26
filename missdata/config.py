@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, asdict, field
 from pathlib import Path
@@ -37,6 +38,7 @@ CONFIG_DIR = _config_dir()
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 MEMORY_PATH = CONFIG_DIR / "memory.json"
 HISTORY_PATH = CONFIG_DIR / "history"
+LOG_DIR = CONFIG_DIR / "logs"
 
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
@@ -120,6 +122,12 @@ OPENAI_COMPATIBLE_PRESETS: dict[str, dict[str, str]] = {
 
 APPROVAL_MODES = ("always", "risky", "auto")
 PROVIDERS = ("groq", "anthropic", "ollama", *OPENAI_COMPATIBLE_PRESETS.keys(), "custom")
+# This order is used only to *offer* a different provider after the active one
+# cannot complete a request. The user must approve every company switch.
+DEFAULT_FALLBACK_PROVIDERS = (
+    "groq", "openai", "anthropic", "deepseek", "openrouter", "together",
+    "mistral", "fireworks", "xai", "moonshot", "perplexity", "ollama", "custom",
+)
 
 
 @dataclass
@@ -143,6 +151,10 @@ class Settings:
     sandbox_mode: bool = True      # confine file tools to cwd + block dangerous commands
     language: str = "en"           # en | fa  (affects a few UI strings)
     max_output_tokens: int = 4096
+    # Ordered candidates to offer after the current provider is exhausted.
+    # An empty list disables cross-company failover; same-provider key rotation
+    # remains enabled whenever more than one key is configured.
+    fallback_providers: list[str] = field(default_factory=lambda: list(DEFAULT_FALLBACK_PROVIDERS))
 
     @classmethod
     def load(cls) -> "Settings":
@@ -191,6 +203,7 @@ class Settings:
 
 def ensure_dirs() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_env() -> None:
@@ -201,53 +214,107 @@ def load_env() -> None:
         load_dotenv(dotenv_path=env_in_config, override=True)
 
 
-def get_api_key(provider: str) -> str | None:
+def _api_key_env_var(provider: str) -> str | None:
+    """Return the conventional single-key environment variable for a provider."""
     if provider == "groq":
-        return os.environ.get("GROQ_API_KEY")
+        return "GROQ_API_KEY"
     if provider == "anthropic":
-        return os.environ.get("ANTHROPIC_API_KEY")
+        return "ANTHROPIC_API_KEY"
     if provider == "brave":
-        # Not a model provider — used by the web_search tool (tools.py).
-        return os.environ.get("BRAVE_API_KEY")
-    if provider == "ollama":
-        # Local server — no API key required. Returned as a truthy sentinel
-        # so the shared "do we have credentials?" checks in cli.py pass.
-        return "not-required"
+        return "BRAVE_API_KEY"
     if provider in OPENAI_COMPATIBLE_PRESETS:
-        return os.environ.get(OPENAI_COMPATIBLE_PRESETS[provider]["env_var"])
+        return OPENAI_COMPATIBLE_PRESETS[provider]["env_var"]
     if provider == "custom":
-        # The env var name itself is user-configurable (settings.custom_api_key_env)
-        # since a fully custom endpoint has no fixed convention.
         settings = Settings.load()
-        return os.environ.get(settings.custom_api_key_env or "CUSTOM_API_KEY")
+        return settings.custom_api_key_env or "CUSTOM_API_KEY"
     return None
 
 
-def save_api_key(provider: str, key: str) -> None:
-    """Persist an API key into the config dir's .env file."""
+def _key_pool_env_var(single_key_env: str) -> str:
+    """Convert FOO_API_KEY to the ordered key-pool variable FOO_API_KEYS."""
+    if single_key_env.endswith("_KEY"):
+        return single_key_env + "S"
+    return single_key_env + "_KEYS"
+
+
+def get_api_keys(provider: str) -> list[str]:
+    """Load an ordered, de-duplicated API-key pool for a provider.
+
+    Existing ``*_API_KEY`` configuration remains valid. Multiple keys may be
+    stored as a JSON array or comma/newline-separated value in ``*_API_KEYS``.
+    """
+    if provider == "ollama":
+        return ["not-required"]
+    single_key_env = _api_key_env_var(provider)
+    if not single_key_env:
+        return []
+
+    raw_pool = os.environ.get(_key_pool_env_var(single_key_env), "").strip()
+    values: list[str] = []
+    if raw_pool:
+        try:
+            decoded = json.loads(raw_pool)
+        except json.JSONDecodeError:
+            decoded = re.split(r"[,\n]", raw_pool)
+        if isinstance(decoded, list):
+            values.extend(str(value).strip() for value in decoded)
+        elif isinstance(decoded, str):
+            values.extend(part.strip() for part in re.split(r"[,\n]", decoded))
+
+    legacy_value = os.environ.get(single_key_env, "").strip()
+    if legacy_value:
+        values.append(legacy_value)
+
+    unique: list[str] = []
+    for value in values:
+        if value and value not in unique:
+            unique.append(value)
+    return unique
+
+
+def get_api_key(provider: str) -> str | None:
+    """Return the first configured key for backwards-compatible callers."""
+    keys = get_api_keys(provider)
+    return keys[0] if keys else None
+
+
+def save_api_keys(provider: str, keys: list[str]) -> None:
+    """Persist an ordered key pool without exposing it in output or logs."""
+    single_key_env = _api_key_env_var(provider)
+    if not single_key_env:
+        raise ValueError(f"Provider '{provider}' does not use an API key.")
+    cleaned: list[str] = []
+    for key in keys:
+        value = key.strip()
+        if value and value not in cleaned:
+            cleaned.append(value)
+    if not cleaned:
+        raise ValueError("At least one non-empty API key is required.")
+
     ensure_dirs()
     env_path = CONFIG_DIR / ".env"
-    if provider in OPENAI_COMPATIBLE_PRESETS:
-        var_name = OPENAI_COMPATIBLE_PRESETS[provider]["env_var"]
-    elif provider == "custom":
-        var_name = Settings.load().custom_api_key_env or "CUSTOM_API_KEY"
-    else:
-        var_name = {"groq": "GROQ_API_KEY", "anthropic": "ANTHROPIC_API_KEY", "brave": "BRAVE_API_KEY"}.get(
-            provider, "ANTHROPIC_API_KEY"
-        )
-
-    lines: list[str] = []
-    if env_path.exists():
-        lines = env_path.read_text(encoding="utf-8").splitlines()
-
-    found = False
-    for i, line in enumerate(lines):
-        if line.startswith(f"{var_name}="):
-            lines[i] = f"{var_name}={key}"
-            found = True
-            break
-    if not found:
-        lines.append(f"{var_name}={key}")
+    pool_env = _key_pool_env_var(single_key_env)
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    replacements = {
+        single_key_env: cleaned[0],
+        pool_env: json.dumps(cleaned),
+    }
+    found = set()
+    for index, line in enumerate(lines):
+        for var_name, value in replacements.items():
+            if line.startswith(f"{var_name}="):
+                lines[index] = f"{var_name}={value}"
+                found.add(var_name)
+                break
+    for var_name, value in replacements.items():
+        if var_name not in found:
+            lines.append(f"{var_name}={value}")
 
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.environ[var_name] = key
+    for var_name, value in replacements.items():
+        os.environ[var_name] = value
+
+
+def save_api_key(provider: str, key: str) -> None:
+    """Persist one key while preserving the historical public helper."""
+    save_api_keys(provider, [key])

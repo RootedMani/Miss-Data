@@ -82,7 +82,10 @@ missdata --set-key anthropic
 missdata --set-key deepseek
 missdata --set-key openrouter
 missdata --set-key custom      # any other OpenAI-compatible endpoint
+missdata --add-key groq        # append additional Groq keys without displaying existing ones
 ```
+
+Each `--set-key` prompt can collect multiple keys. Keys are tried in the order you provide them when the active provider reports an error or reaches a limit. Use `--add-key <provider>` or `/keys add <provider>` to append more keys later.
 
 Or set environment variables directly:
 
@@ -95,6 +98,13 @@ export OPENROUTER_API_KEY=your_key_here
 
 set GROQ_API_KEY=your_key_here             # Windows (cmd)
 $env:GROQ_API_KEY="your_key_here"          # Windows (PowerShell)
+```
+
+For an ordered pool, use the plural variable as a JSON array (the singular variable remains supported for backwards compatibility):
+
+```bash
+export GROQ_API_KEYS='["first_key", "second_key"]'
+export OPENAI_API_KEYS='["first_key", "second_key"]'
 ```
 
 **Using a "custom" OpenAI-compatible endpoint** (self-hosted, enterprise gateway, or any provider not built in): point it at the base URL and model, then set the key under whatever env var name you like:
@@ -138,6 +148,12 @@ You › create a Flask app with a health check endpoint
 | `/forget <n>` | Remove remembered fact `n` |
 | `/cwd [path]` | Show or change the working directory |
 | `/provider <name>` | Switch LLM backend mid-session (`groq`, `anthropic`, `ollama`, `deepseek`, `openai`, `openrouter`, `together`, `mistral`, `fireworks`, `xai`, `moonshot`, `perplexity`, or `custom`) |
+| `/keys` | Show the number of configured keys for each provider without exposing the keys |
+| `/keys add <provider>` | Append one or more keys to a provider's automatic retry pool |
+| `/fallback` | Show the ordered providers that can be offered after the active provider is exhausted |
+| `/fallback set <provider,...>` | Set the order in which configured alternative providers are offered |
+| `/fallback off` | Disable cross-provider offers while keeping same-provider key rotation enabled |
+| `/logs` | Print the current session's activity log file path |
 | `/model <name>` | Change the model for the current provider |
 | `/ollama-url <url>` | Set the Ollama server URL (default `http://localhost:11434`) |
 | `/base-url <url>` | Set the API base URL used by the `custom` provider |
@@ -146,7 +162,21 @@ You › create a Flask app with a health check endpoint
 | `/sandbox <on\|off>` | Confine file tools to cwd + block dangerous commands (default: on) |
 | `/lang <en\|fa>` | Set the assistant's response language (English is the default) |
 
-## 5. Approval modes
+## 5. Resilience, provider switching, and logs
+
+Miss Data first retries the current provider with the next configured key. If its configured key pool is exhausted, it finds the next configured provider in the `/fallback` order and **asks before switching companies**. For example, a failed OpenAI request can prompt: `Switch to Groq (...) and retry your request? [y/N]`. A refusal leaves the provider unchanged and reports the original failure. This protects you from an unapproved switch to a different account, pricing model, or data processor.
+
+A provider change starts a fresh conversation because tool-call message formats differ across APIs. If actions have already run in that turn, the confirmation clearly warns that replaying the original request could repeat them. The program does not silently switch a provider in `--prompt` mode because that mode is non-interactive.
+
+Each session writes a privacy-conscious, newline-delimited JSON activity log. It records prompts, provider attempts, key fingerprints (never key values), provider responses, tool requests/results, approvals, switches, errors, and files touched. Values that look like API keys, tokens, passwords, authorization headers, or known environment secrets are redacted before logging. At startup the CLI prints the file location; use `/logs` to show it again.
+
+| Platform | Log directory |
+|---|---|
+| Linux | `~/.config/missdata/logs/` |
+| macOS | `~/Library/Application Support/missdata/logs/` |
+| Windows | `%APPDATA%\\missdata\\logs\\` |
+
+## 6. Approval modes
 
 Miss Data can take real actions on your machine (writing files, running shell commands, deleting things). You control how cautious it is:
 
@@ -156,7 +186,7 @@ Miss Data can take real actions on your machine (writing files, running shell co
 
 Set it with `--approval` at launch, or `/approval <mode>` mid-session. During an approval prompt, answering `a` approves that tool type for the rest of the session.
 
-## 5a. Sandbox (on by default)
+## 6a. Sandbox (on by default)
 
 Independently of approval mode, Miss Data sandboxes what its tools are physically able to do:
 
@@ -166,7 +196,7 @@ Independently of approval mode, Miss Data sandboxes what its tools are physicall
 
 This is confinement for a trusted local agent, not a hardened multi-tenant jail — inside the working directory, `run_command` still has real shell access within the resource limits. Turn it off with `--sandbox off` or `/sandbox off` if you fully trust a task and need it to reach outside the project directory; do this only in a throwaway or already-trusted environment. The banner shows current sandbox status on startup.
 
-## 6. What it can do (tools)
+## 7. What it can do (tools)
 
 - `read_file`, `write_file`, `edit_file` (precise find/replace), `delete_path`, `move_path`, `make_dir`
 - `list_dir` (tree view, skips `.git`/`node_modules`/etc.), `search_files` (glob), `grep` (content search)
@@ -177,7 +207,7 @@ This is confinement for a trusted local agent, not a hardened multi-tenant jail 
 
 After each turn, Miss Data prints a **"Files touched this turn"** summary listing every file it created, edited, deleted, or moved — so it's always clear what changed on disk without scrolling back through the tool-call log.
 
-## 7. Project layout
+## 8. Project layout
 
 ```
 miss_data/
@@ -197,21 +227,22 @@ miss_data/
 └── requirements.txt
 ```
 
-## 8. Where config lives
+## 9. Where config lives
 
 - Linux: `~/.config/missdata/`
 - macOS: `~/Library/Application Support/missdata/`
 - Windows: `%APPDATA%\missdata\`
 
-This holds `settings.json` (provider/model/approval choice), `memory.json` (remembered facts), and `.env` (API keys) — separate from any project you point it at.
+This holds `settings.json` (provider/model/approval choice and fallback order), `memory.json` (remembered facts), `.env` (API keys and optional pools), and `logs/` (session activity records) — separate from any project you point it at.
 
-## 9. Security notes
+## 10. Security notes
 
-- API keys are stored in your user config directory, not inside a project folder, so they won't get committed to a repo by accident.
+- API keys are stored in your user config directory, not inside a project folder, so they won't get committed to a repo by accident. Key-pool values are never printed or placed in activity logs.
+- Activity logs retain prompts and tool output so treat `logs/` as sensitive local data. The logger redacts credential-like values and creates session files with user-only permissions where the operating system supports them.
 - `run_command`/`run_python` execute real code with your user's permissions, subject to the sandbox described in §5a — review what's about to run, especially in `auto` approval mode.
 - The sandbox confines *where* tools can act and blocks the most obviously destructive commands; it does not vet arbitrary code for subtler harm. Review risky actions, especially in `auto` mode.
 - The agent refuses to write malware/exploits and will flag obvious security issues (SQL injection, hardcoded secrets, etc.) it notices in code it touches, but it is not a substitute for a real security review.
 
-## 10. Roadmap (web version)
+## 11. Roadmap (web version)
 
 The `Agent` class is deliberately decoupled from the terminal (`ui.py` is the only CLI-specific piece it talks to indirectly via callbacks). A future web frontend can drive `missdata.agent.Agent` directly — swap the input/output layer, keep the tool execution and provider logic as-is.
