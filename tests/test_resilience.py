@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from missdata.activity import ActivityLogger
 from missdata.agent import Agent
 from missdata.config import Settings, get_api_keys
+from missdata.ollama_recovery import OllamaRepairResult, diagnose_ollama_error, is_loopback_url
 from missdata.providers import ProviderError
 
 
@@ -187,6 +188,49 @@ class ContextRecoveryTests(unittest.TestCase):
         agent, _ = self._agent_with_history()
         agent.settings.context_recovery = "auto"
         self.assertFalse(agent._recover_from_context_limit(ProviderError("Groq rejected the API key (401)")))
+
+
+class OllamaRecoveryTests(unittest.TestCase):
+    def _bare_agent(self, mode: str = "auto") -> Agent:
+        agent = Agent.__new__(Agent)
+        agent.settings = Settings(provider="ollama", ollama_model="gemma4:e4b", ollama_recovery=mode)
+        agent.logger = MagicMock()
+        agent.allow_provider_switch_prompt = True
+        return agent
+
+    def test_classifies_connection_and_model_errors(self):
+        self.assertEqual(
+            "connection",
+            diagnose_ollama_error(ProviderError("Could not reach Ollama at http://localhost:11434 (<urlopen error [Errno 111] Connection refused>)")).kind,
+        )
+        self.assertEqual(
+            "model_missing",
+            diagnose_ollama_error(ProviderError("Ollama returned 404 for model 'gemma4:e4b'. It likely isn't pulled yet")).kind,
+        )
+        self.assertEqual("unknown", diagnose_ollama_error(ProviderError("Ollama HTTP error 500")).kind)
+
+    def test_server_start_is_limited_to_loopback_urls(self):
+        self.assertTrue(is_loopback_url("http://localhost:11434"))
+        self.assertTrue(is_loopback_url("http://127.0.0.1:11434"))
+        self.assertFalse(is_loopback_url("http://ollama.example.com:11434"))
+
+    def test_auto_mode_runs_approved_connection_repair(self):
+        agent = self._bare_agent(mode="auto")
+        result = OllamaRepairResult(True, "server_started", "Started Ollama and confirmed it is reachable.")
+        error = ProviderError("Could not reach Ollama at http://localhost:11434 (<urlopen error [Errno 111] Connection refused>)")
+        with patch("missdata.agent.repair_ollama", return_value=result) as repair, patch("missdata.agent.ui.print_info"):
+            self.assertTrue(agent._recover_from_ollama_failure(error))
+        repair.assert_called_once()
+        self.assertTrue(any(
+            call.args[0] == "ollama_repair_completed" for call in agent.logger.event.call_args_list
+        ))
+
+    def test_ask_mode_requires_user_approval(self):
+        agent = self._bare_agent(mode="ask")
+        error = ProviderError("Could not reach Ollama at http://localhost:11434 (<urlopen error [Errno 111] Connection refused>)")
+        with patch("builtins.input", return_value="n"), patch("missdata.agent.repair_ollama") as repair, patch("missdata.agent.ui.print_info"):
+            self.assertFalse(agent._recover_from_ollama_failure(error))
+        repair.assert_not_called()
 
 
 if __name__ == "__main__":

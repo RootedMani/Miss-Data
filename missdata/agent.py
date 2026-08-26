@@ -13,6 +13,7 @@ from pathlib import Path
 from . import memory, tools, ui
 from .activity import ActivityLogger
 from .config import OPENAI_COMPATIBLE_PRESETS, Settings, get_api_key, get_api_keys
+from .ollama_recovery import diagnose_ollama_error, repair_ollama
 from .providers import ProviderError, ToolCall, make_provider
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent / "system_prompt.md"
@@ -321,6 +322,69 @@ class Agent:
         )
         return True
 
+    def _recover_from_ollama_failure(self, error: ProviderError) -> bool:
+        """Offer a safe local Ollama repair before rotating/failing over.
+
+        Starting a server or downloading a model is never done for a remote
+        endpoint. The default mode asks first; `ollama_recovery=auto` is a
+        deliberate, persisted opt-in for unattended local repair.
+        """
+        if self.settings.provider != "ollama":
+            return False
+        diagnosis = diagnose_ollama_error(error)
+        if diagnosis.kind == "unknown":
+            return False
+
+        mode = self.settings.ollama_recovery
+        if mode == "off":
+            self.logger.event("ollama_recovery_skipped", reason="disabled", error=str(error))
+            return False
+        action_text = (
+            "start the local Ollama server with `ollama serve`"
+            if diagnosis.kind == "connection"
+            else f"ensure Ollama is running and download the model `{self.settings.ollama_model}` with `ollama pull`"
+        )
+        if mode != "auto":
+            if not self.allow_provider_switch_prompt:
+                self.logger.event(
+                    "ollama_recovery_skipped", reason="non_interactive_session",
+                    diagnosis=diagnosis.kind, error=str(error),
+                )
+                return False
+            print()
+            ui.print_info(diagnosis.message)
+            try:
+                answer = input(ui.yellow(f"May I {action_text}, then retry your request? [y/N]: ")).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                answer = ""
+            approved = answer in ("y", "yes")
+            self.logger.event(
+                "ollama_recovery_prompt", diagnosis=diagnosis.kind,
+                action=action_text, approved=approved, error=str(error),
+            )
+            if not approved:
+                return False
+        else:
+            self.logger.event(
+                "ollama_recovery_approved", method="automatic", diagnosis=diagnosis.kind,
+                action=action_text, error=str(error),
+            )
+
+        ui.print_info(f"Attempting to {action_text}...")
+        result = repair_ollama(
+            self.settings.ollama_base_url, self.settings.ollama_model, diagnosis,
+        )
+        self.logger.event(
+            "ollama_repair_completed", diagnosis=diagnosis.kind, action=result.action,
+            repaired=result.repaired, detail=result.detail,
+        )
+        if result.repaired:
+            ui.print_info(result.detail + " Retrying your request...")
+            return True
+        ui.print_info("Ollama repair did not complete: " + result.detail)
+        return False
+
     def change_cwd(self, new_cwd: str) -> str:
         p = Path(new_cwd).expanduser()
         if not p.is_absolute():
@@ -542,6 +606,9 @@ class Agent:
         # Avoid an endless compact/retry cycle if the active request itself is
         # too large or the provider's TPM limit cannot be resolved by compaction.
         context_recovery_attempted = False
+        # Avoid repeatedly starting/pulling when an Ollama repair cannot solve
+        # the underlying local installation or hardware problem.
+        ollama_recovery_attempted = False
         tried_keys: dict[str, set[str | None]] = {
             self.settings.provider: {ActivityLogger.key_fingerprint(self._active_api_key)}
         }
@@ -569,6 +636,10 @@ class Agent:
                 )
                 if not context_recovery_attempted and self._recover_from_context_limit(error):
                     context_recovery_attempted = True
+                    continue
+
+                if not ollama_recovery_attempted and self._recover_from_ollama_failure(error):
+                    ollama_recovery_attempted = True
                     continue
 
                 current_tried_keys = tried_keys.setdefault(failed_provider, set())

@@ -13,7 +13,19 @@ from __future__ import annotations
 import math
 from typing import Any
 
-__all__ = ["is_fibonacci"]
+from __future__ import annotations
+
+import math
+from typing import Any
+
+__all__ = ["is_fibonacci", "is_in_fibonacci"]
+
+def is_in_fibonacci(n: int | float) -> bool:
+    """Return ``True`` if *n* is a Fibonacci number, ``False`` otherwise.
+
+    This is a convenience alias for :func:`is_fibonacci`.
+    """
+    return is_fibonacci(n)
 
 
 def _is_perfect_square(x: int) -> bool:

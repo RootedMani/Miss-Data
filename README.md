@@ -2,6 +2,8 @@
 
 A terminal coding agent. It reads and edits files, searches your codebase, runs shell commands, and remembers durable facts across sessions — all from the command line. Works with **Groq**, **Anthropic (Claude)**, **Ollama** (local models), or any **OpenAI-compatible API** (DeepSeek, OpenAI, OpenRouter, Together AI, Mistral, Fireworks, xAI/Grok, Moonshot/Kimi, Perplexity, or a fully custom endpoint) as the LLM backend, switchable at any time.
 
+> **Complete reference:** See [DOCUMENTATION.md](DOCUMENTATION.md) for the full installation, architecture, provider, security, resilience, Ollama recovery, logging, troubleshooting, and development guide.
+
 This is a CLI tool today; it's built so a web frontend can be layered on top of the same `missdata` package later (the `Agent` class in `missdata/agent.py` is UI-agnostic — the CLI is just one interface to it).
 
 ---
@@ -124,6 +126,7 @@ missdata --provider deepseek      # use DeepSeek for this session
 missdata --model llama-3.3-70b-versatile
 missdata --approval auto          # don't ask for confirmation on risky actions
 missdata --context-recovery auto  # compact context and retry automatically after request-size errors
+missdata --ollama-recovery ask    # ask before starting local Ollama or downloading a missing model
 missdata --sandbox off            # disable the filesystem/command sandbox (see §6a)
 missdata -p "list the files in this repo"   # run one prompt non-interactively
 ```
@@ -155,6 +158,7 @@ You › create a Flask app with a health check endpoint
 | `/fallback set <provider,...>` | Set the order in which configured alternative providers are offered |
 | `/fallback off` | Disable cross-provider offers while keeping same-provider key rotation enabled |
 | `/context-recovery <ask\|auto\|off>` | On context/token-limit errors, ask before compacting, compact automatically, or disable this recovery |
+| `/ollama-recovery <ask\|auto\|off>` | On local Ollama connection/model errors, ask before repair, repair automatically, or disable repair |
 | `/logs` | Print the current session's activity log file path |
 | `/model <name>` | Change the model for the current provider |
 | `/ollama-url <url>` | Set the Ollama server URL (default `http://localhost:11434`) |
@@ -171,6 +175,8 @@ Miss Data first retries the current provider with the next configured key. If it
 A provider change starts a fresh conversation because tool-call message formats differ across APIs. If actions have already run in that turn, the confirmation clearly warns that replaying the original request could repeat them. The program does not silently switch a provider in `--prompt` mode because that mode is non-interactive.
 
 Before rotating a key or offering a different provider, Miss Data now detects request-size, context-window, and token-per-minute size errors such as Groq `413` errors. With the default `/context-recovery ask`, it asks: `Compact older conversation context and retry? [y/N]`. It uses the built-in summary compaction while preserving the newest turn, so the failed request can be retried; if the provider cannot summarize the old history because that summary is also too large, it safely discards only older complete turns and clearly records that fact. Set `/context-recovery auto` (or launch with `--context-recovery auto`) to approve this recovery in advance, or `/context-recovery off` to bypass it. A single oversized user message cannot be made smaller automatically, so that situation still requires shortening the request.
+
+When the active provider is Ollama and it reports a connection-refused or missing-model failure, Miss Data identifies the problem before provider failover. With the default `/ollama-recovery ask`, it asks permission to run the narrowly scoped local repair: `ollama serve` for a stopped local server, or `ollama pull <model>` for a missing model. It retries the original request once after a confirmed repair. `/ollama-recovery auto` pre-approves only those local actions; `/ollama-recovery off` disables them. The application refuses to self-start a remote Ollama endpoint and never sends recovery commands through a shell.
 
 Each session writes a privacy-conscious, newline-delimited JSON activity log. It records prompts, provider attempts, key fingerprints (never key values), provider responses, tool requests/results, approvals, switches, errors, and files touched. Values that look like API keys, tokens, passwords, authorization headers, or known environment secrets are redacted before logging. At startup the CLI prints the file location; use `/logs` to show it again.
 
@@ -223,12 +229,15 @@ miss_data/
 │   ├── sandbox.py          # path confinement, dangerous-command deny-list, resource limits
 │   ├── memory.py           # persistent facts
 │   ├── config.py           # settings + API key storage (cross-platform paths)
+│   ├── activity.py         # structured session logging with secret redaction
+│   ├── ollama_recovery.py  # safe local Ollama server/model repair helpers
 │   ├── ui.py               # terminal colors/formatting
 │   └── system_prompt.md    # agent's instructions
 ├── run.py                  # run without installing
 ├── setup.sh / setup.bat    # one-step venv + install
 ├── pyproject.toml
-└── requirements.txt
+├── requirements.txt
+└── DOCUMENTATION.md        # complete user and maintainer reference
 ```
 
 ## 9. Where config lives
