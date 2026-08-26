@@ -22,7 +22,7 @@ This is a CLI tool today; it's built so a web frontend can be layered on top of 
 ### Linux / macOS
 
 ```bash
-git clone <https://github.com/RootedMani/Miss-Data>
+git clone https://github.com/RootedMani/Miss-Data
 cd miss_data
 ./setup.sh
 source .venv/bin/activate
@@ -32,7 +32,7 @@ missdata
 ### Windows
 
 ```bat
-git clone <https://github.com/RootedMani/Miss-Data>
+git clone https://github.com/RootedMani/Miss-Data
 cd miss_data
 setup.bat
 .venv\Scripts\activate
