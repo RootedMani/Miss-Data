@@ -12,7 +12,7 @@ from . import memory, ui
 from .activity import ActivityLogger
 from .agent import Agent
 from .config import (
-    APPROVAL_MODES, OPENAI_COMPATIBLE_PRESETS, PROVIDERS, Settings, ensure_dirs,
+    APPROVAL_MODES, CONTEXT_RECOVERY_MODES, OPENAI_COMPATIBLE_PRESETS, PROVIDERS, Settings, ensure_dirs,
     get_api_key, get_api_keys, load_env, save_api_keys,
 )
 from .providers import ProviderError
@@ -181,6 +181,26 @@ def handle_slash_command(cmd: str, agent: Agent, settings: Settings) -> bool:
             agent.logger.event("api_key_pool_updated", provider=tokens[1].lower(), count=len(get_api_keys(tokens[1].lower())))
         else:
             ui.print_error("Usage: /keys  or  /keys add <provider>")
+
+    elif name == "/context-recovery":
+        choice = rest.strip().lower()
+        if not choice:
+            ui.print_info(
+                f"Context-limit recovery is '{settings.context_recovery}'. "
+                "Use `/context-recovery ask|auto|off`."
+            )
+        elif choice not in CONTEXT_RECOVERY_MODES:
+            ui.print_error("Usage: /context-recovery <ask|auto|off>")
+        else:
+            settings.context_recovery = choice
+            settings.save()
+            if choice == "auto":
+                ui.print_info("Oversized conversations will compact and retry automatically once before failover.")
+            elif choice == "ask":
+                ui.print_info("Miss Data will ask before compacting an oversized conversation.")
+            else:
+                ui.print_info("Automatic context recovery disabled.")
+            agent.logger.event("context_recovery_mode_updated", mode=choice)
 
     elif name == "/fallback":
         value = rest.strip()
@@ -371,6 +391,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--model", help="Model name override for this session")
     parser.add_argument("--base-url", help="API base URL for --provider custom (e.g. https://api.example.com/v1)")
     parser.add_argument("--approval", choices=APPROVAL_MODES, help="Approval mode for this session")
+    parser.add_argument("--context-recovery", choices=CONTEXT_RECOVERY_MODES,
+                        help="On oversized requests: ask before compacting, compact automatically, or turn recovery off")
     parser.add_argument("--sandbox", choices=("on", "off"),
                          help="Confine file tools to the working directory and block dangerous "
                               "commands (default: on). Use 'off' to restore full, unrestricted "
@@ -415,6 +437,8 @@ def main(argv: list[str] | None = None) -> None:
         settings.custom_base_url = args.base_url.rstrip("/")
     if args.approval:
         settings.approval_mode = args.approval
+    if args.context_recovery:
+        settings.context_recovery = args.context_recovery
     if args.sandbox:
         settings.sandbox_mode = (args.sandbox == "on")
 

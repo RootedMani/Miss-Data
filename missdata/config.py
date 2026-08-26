@@ -121,6 +121,9 @@ OPENAI_COMPATIBLE_PRESETS: dict[str, dict[str, str]] = {
 }
 
 APPROVAL_MODES = ("always", "risky", "auto")
+# Recovery after a context/token-limit error: ask before compacting by default,
+# compact immediately when explicitly configured to auto, or disable recovery.
+CONTEXT_RECOVERY_MODES = ("ask", "auto", "off")
 PROVIDERS = ("groq", "anthropic", "ollama", *OPENAI_COMPATIBLE_PRESETS.keys(), "custom")
 # This order is used only to *offer* a different provider after the active one
 # cannot complete a request. The user must approve every company switch.
@@ -151,6 +154,8 @@ class Settings:
     sandbox_mode: bool = True      # confine file tools to cwd + block dangerous commands
     language: str = "en"           # en | fa  (affects a few UI strings)
     max_output_tokens: int = 4096
+    # How an oversized conversation is reduced before retrying the same request.
+    context_recovery: str = "ask"  # ask | auto | off
     # Ordered candidates to offer after the current provider is exhausted.
     # An empty list disables cross-company failover; same-provider key rotation
     # remains enabled whenever more than one key is configured.

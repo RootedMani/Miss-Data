@@ -111,5 +111,83 @@ class ProviderConsentTests(unittest.TestCase):
         self.assertEqual("provider_switch_not_prompted", agent.logger.event.call_args.args[0])
 
 
+class _ContextRecoveryProvider:
+    def __init__(self):
+        self.main_requests = 0
+        self.summary_requests = 0
+
+    def make_system_message(self, content: str) -> dict:
+        return {"role": "system", "content": content}
+
+    def make_user_message(self, content: str) -> dict:
+        return {"role": "user", "content": content}
+
+    def stream_turn(self, messages: list[dict], tool_schemas: list[dict]):
+        if not tool_schemas:
+            self.summary_requests += 1
+            from missdata.providers import StreamResult
+            return StreamResult(text="Previous task: inspect the repository.")
+        self.main_requests += 1
+        if self.main_requests == 1:
+            raise ProviderError(
+                "Groq API error: Error code: 413 - request too large on tokens per minute (TPM)"
+            )
+        from missdata.providers import StreamResult
+        return StreamResult(text="Recovered answer")
+
+    def append_assistant_turn(self, messages: list[dict], result) -> None:
+        messages.append({"role": "assistant", "content": result.text})
+
+
+class ContextRecoveryTests(unittest.TestCase):
+    def _agent_with_history(self) -> tuple[Agent, _ContextRecoveryProvider]:
+        provider = _ContextRecoveryProvider()
+        agent = Agent.__new__(Agent)
+        agent.settings = Settings(provider="groq", context_recovery="auto")
+        agent.cwd = os.getcwd()
+        agent.sandbox_root = agent.cwd
+        agent.messages = [
+            {"role": "system", "content": "system"},
+            provider.make_user_message("Earlier request"),
+            {"role": "assistant", "content": "Earlier answer"},
+        ]
+        agent.always_approved = set()
+        agent._touched_files = set()
+        agent.logger = MagicMock()
+        agent._provider = provider
+        agent._active_api_key = "test-key"
+        agent._spinner = MagicMock()
+        agent._marker_shown = False
+        agent._suppress_stream_output = False
+        agent._tool_calls_completed = 0
+        agent.allow_provider_switch_prompt = True
+        return agent, provider
+
+    def test_detects_groq_413_request_too_large(self):
+        self.assertTrue(Agent._is_context_limit_error(ProviderError(
+            "Groq API error: Error code: 413 - Request too large on tokens per minute (TPM)"
+        )))
+        self.assertFalse(Agent._is_context_limit_error(ProviderError("Groq rejected the API key (401)")))
+
+    def test_auto_compacts_and_retries_before_key_or_provider_failover(self):
+        agent, provider = self._agent_with_history()
+        with patch("missdata.agent.ui.print_agent_marker"), patch("missdata.agent.ui.print_info"):
+            agent.run_turn("Current request")
+
+        self.assertEqual(2, provider.main_requests)
+        self.assertEqual(1, provider.summary_requests)
+        self.assertTrue(any(
+            call.args[0] == "context_recovered" for call in agent.logger.event.call_args_list
+        ))
+        self.assertTrue(any(
+            message.get("content") == "Recovered answer" for message in agent.messages
+        ))
+
+    def test_non_context_errors_do_not_offer_compaction(self):
+        agent, _ = self._agent_with_history()
+        agent.settings.context_recovery = "auto"
+        self.assertFalse(agent._recover_from_context_limit(ProviderError("Groq rejected the API key (401)")))
+
+
 if __name__ == "__main__":
     unittest.main()

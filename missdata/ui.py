@@ -79,6 +79,7 @@ def print_help() -> None:
         ("/fallback", "Show the provider order offered after the active provider fails"),
         ("/fallback set <names>", "Set offer order, e.g. groq,openai,anthropic; every switch still asks"),
         ("/fallback off", "Disable cross-provider fallback while keeping key rotation"),
+        ("/context-recovery <ask|auto|off>", "Compact/retry after context-limit errors, automatically or with permission"),
         ("/logs", "Show the path to the current structured activity log"),
         ("/model <name>", "Set the model for the current provider"),
         ("/ollama-url <url>", "Set the Ollama server URL (default http://localhost:11434)"),

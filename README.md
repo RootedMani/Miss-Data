@@ -123,7 +123,8 @@ missdata --provider anthropic     # use Claude for this session
 missdata --provider deepseek      # use DeepSeek for this session
 missdata --model llama-3.3-70b-versatile
 missdata --approval auto          # don't ask for confirmation on risky actions
-missdata --sandbox off            # disable the filesystem/command sandbox (see §5a)
+missdata --context-recovery auto  # compact context and retry automatically after request-size errors
+missdata --sandbox off            # disable the filesystem/command sandbox (see §6a)
 missdata -p "list the files in this repo"   # run one prompt non-interactively
 ```
 
@@ -153,6 +154,7 @@ You › create a Flask app with a health check endpoint
 | `/fallback` | Show the ordered providers that can be offered after the active provider is exhausted |
 | `/fallback set <provider,...>` | Set the order in which configured alternative providers are offered |
 | `/fallback off` | Disable cross-provider offers while keeping same-provider key rotation enabled |
+| `/context-recovery <ask\|auto\|off>` | On context/token-limit errors, ask before compacting, compact automatically, or disable this recovery |
 | `/logs` | Print the current session's activity log file path |
 | `/model <name>` | Change the model for the current provider |
 | `/ollama-url <url>` | Set the Ollama server URL (default `http://localhost:11434`) |
@@ -167,6 +169,8 @@ You › create a Flask app with a health check endpoint
 Miss Data first retries the current provider with the next configured key. If its configured key pool is exhausted, it finds the next configured provider in the `/fallback` order and **asks before switching companies**. For example, a failed OpenAI request can prompt: `Switch to Groq (...) and retry your request? [y/N]`. A refusal leaves the provider unchanged and reports the original failure. This protects you from an unapproved switch to a different account, pricing model, or data processor.
 
 A provider change starts a fresh conversation because tool-call message formats differ across APIs. If actions have already run in that turn, the confirmation clearly warns that replaying the original request could repeat them. The program does not silently switch a provider in `--prompt` mode because that mode is non-interactive.
+
+Before rotating a key or offering a different provider, Miss Data now detects request-size, context-window, and token-per-minute size errors such as Groq `413` errors. With the default `/context-recovery ask`, it asks: `Compact older conversation context and retry? [y/N]`. It uses the built-in summary compaction while preserving the newest turn, so the failed request can be retried; if the provider cannot summarize the old history because that summary is also too large, it safely discards only older complete turns and clearly records that fact. Set `/context-recovery auto` (or launch with `--context-recovery auto`) to approve this recovery in advance, or `/context-recovery off` to bypass it. A single oversized user message cannot be made smaller automatically, so that situation still requires shortening the request.
 
 Each session writes a privacy-conscious, newline-delimited JSON activity log. It records prompts, provider attempts, key fingerprints (never key values), provider responses, tool requests/results, approvals, switches, errors, and files touched. Values that look like API keys, tokens, passwords, authorization headers, or known environment secrets are redacted before logging. At startup the CLI prints the file location; use `/logs` to show it again.
 

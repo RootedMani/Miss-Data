@@ -57,6 +57,7 @@ class Agent:
         self._active_api_key: str | None = None
         self._spinner = ui.ThinkingSpinner()
         self._marker_shown = False  # has "Miss Data ›" been printed for the current turn yet?
+        self._suppress_stream_output = False  # internal compaction summary, never user-facing
         self._tool_calls_completed = 0
         self._init_provider()
         self._reset_system_message()
@@ -88,6 +89,8 @@ class Agent:
             self._marker_shown = True
 
     def _on_text_chunk(self, chunk: str) -> None:
+        if getattr(self, "_suppress_stream_output", False):
+            return
         self._spinner.stop()  # first real output — stop showing "thinking"
         self._ensure_marker_shown()
         print(chunk, end="", flush=True)
@@ -185,10 +188,13 @@ class Agent:
         request_messages = messages_to_summarize + [summary_request]
 
         self._marker_shown = False
+        previous_suppression = getattr(self, "_suppress_stream_output", False)
+        self._suppress_stream_output = True
         self._spinner.start()
         try:
             result = self._provider.stream_turn(request_messages, [])
         finally:
+            self._suppress_stream_output = previous_suppression
             self._spinner.stop()
 
         summary_text = result.text.strip()
@@ -205,6 +211,115 @@ class Agent:
 
         after_count = 1 + sum(len(t) for t in kept_turns)
         return {"before": before_count, "after": after_count, "kept_turns": len(kept_turns)}
+
+    @staticmethod
+    def _is_context_limit_error(error: ProviderError) -> bool:
+        """Recognize request-size, context-window, and TPM-size failures."""
+        message = str(error).lower()
+        markers = (
+            "request too large", "context length", "context window", "maximum context",
+            "prompt is too long", "input is too long", "too many tokens",
+            "tokens per minute", "tpm", "rate_limit_exceeded",
+        )
+        return any(marker in message for marker in markers) and (
+            "413" in message or "token" in message or "context" in message
+            or "request too large" in message or "tpm" in message
+        )
+
+    def _conversation_turns(self) -> list[list[dict]]:
+        """Partition native messages into whole turns without separating tools."""
+        turns: list[list[dict]] = []
+        for message in (m for m in self.messages if m.get("role") != "system"):
+            if message.get("role") == "user":
+                turns.append([message])
+            elif turns:
+                turns[-1].append(message)
+            else:
+                turns.append([message])
+        return turns
+
+    def _discard_old_context(self, keep_recent_turns: int = 1) -> dict:
+        """Last-resort local compaction when an API cannot summarize the history.
+
+        It intentionally keeps the newest complete turns, including the current
+        request, and adds a short truthful note rather than inventing a summary.
+        """
+        turns = self._conversation_turns()
+        if len(turns) < 2:
+            raise ValueError("Not enough conversation yet to reduce the context.")
+        keep_recent_turns = max(1, min(keep_recent_turns, len(turns) - 1))
+        kept_turns = turns[-keep_recent_turns:]
+        before_count = sum(len(turn) for turn in turns)
+        self.messages = []
+        self._reset_system_message()
+        self.messages.append(self._provider.make_user_message(
+            "(Earlier conversation was removed after the provider rejected an oversized "
+            "request. Use the recent messages below; ask for clarification if older details matter.)"
+        ))
+        for turn in kept_turns:
+            self.messages.extend(turn)
+        return {
+            "before": before_count,
+            "after": 1 + sum(len(turn) for turn in kept_turns),
+            "kept_turns": len(kept_turns),
+        }
+
+    def _ask_context_recovery(self, error: ProviderError) -> bool:
+        """Obtain explicit consent to reduce history unless auto mode was chosen."""
+        mode = self.settings.context_recovery
+        if mode == "off":
+            self.logger.event("context_recovery_skipped", reason="disabled", error=str(error))
+            return False
+        if mode == "auto":
+            self.logger.event("context_recovery_approved", method="automatic", error=str(error))
+            return True
+        if not self.allow_provider_switch_prompt:
+            self.logger.event("context_recovery_skipped", reason="non_interactive_session", error=str(error))
+            return False
+
+        print()
+        ui.print_info(
+            "The provider rejected the request because the conversation is too large. "
+            "I can compact older messages and retry the same request before trying another key or provider."
+        )
+        try:
+            answer = input(ui.yellow("Compact older conversation context and retry? [y/N]: ")).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            answer = ""
+        approved = answer in ("y", "yes")
+        self.logger.event("context_recovery_prompt", approved=approved, error=str(error))
+        return approved
+
+    def _recover_from_context_limit(self, error: ProviderError) -> bool:
+        """Compact old turns, then let the caller retry the original request once."""
+        if not self._is_context_limit_error(error) or not self._ask_context_recovery(error):
+            return False
+        try:
+            # Keep the newest complete turn: in a failed request this includes
+            # the current user message that must be retried.
+            stats = self.compact_context(keep_recent_turns=1)
+            method = "model_summary"
+        except (ProviderError, ValueError) as summary_error:
+            try:
+                stats = self._discard_old_context(keep_recent_turns=1)
+                method = "local_discard"
+                self.logger.event("context_summary_failed", error=str(summary_error))
+            except ValueError as discard_error:
+                self.logger.event(
+                    "context_recovery_failed", error=str(discard_error), original_error=str(error),
+                )
+                ui.print_info("The current request itself may be too large; please shorten it and try again.")
+                return False
+
+        self._marker_shown = False
+        ui.print_info(
+            f"Context compacted ({stats['before']} messages → {stats['after']}); retrying your request..."
+        )
+        self.logger.event(
+            "context_recovered", method=method, original_error=str(error), **stats,
+        )
+        return True
 
     def change_cwd(self, new_cwd: str) -> str:
         p = Path(new_cwd).expanduser()
@@ -424,6 +539,9 @@ class Agent:
         self._marker_shown = False
         self._tool_calls_completed = 0
         attempted_providers: set[str] = {self.settings.provider}
+        # Avoid an endless compact/retry cycle if the active request itself is
+        # too large or the provider's TPM limit cannot be resolved by compaction.
+        context_recovery_attempted = False
         tried_keys: dict[str, set[str | None]] = {
             self.settings.provider: {ActivityLogger.key_fingerprint(self._active_api_key)}
         }
@@ -449,6 +567,10 @@ class Agent:
                     "provider_request_failed", provider=failed_provider, model=self.settings.model,
                     error=str(error), api_key_fingerprint=ActivityLogger.key_fingerprint(self._active_api_key),
                 )
+                if not context_recovery_attempted and self._recover_from_context_limit(error):
+                    context_recovery_attempted = True
+                    continue
+
                 current_tried_keys = tried_keys.setdefault(failed_provider, set())
                 if self._rotate_to_next_key(current_tried_keys):
                     continue
