@@ -133,6 +133,18 @@ export const Terminal: React.FC<TerminalProps> = ({
               /man getting-started
             </button>
             <button 
+              onClick={() => onSendMessage('/update')}
+              className="px-2 py-1 rounded bg-[#21262d] hover:bg-[#30363d] text-[#7ee787] border border-[#30363d] transition-colors"
+            >
+              /update
+            </button>
+            <button 
+              onClick={() => onSendMessage('/discard')}
+              className="px-2 py-1 rounded bg-[#21262d] hover:bg-[#30363d] text-[#f0883e] border border-[#30363d] transition-colors"
+            >
+              /discard
+            </button>
+            <button 
               onClick={() => onSendMessage('Find any TODO comments in this project')}
               className="px-2 py-1 rounded bg-[#21262d] hover:bg-[#30363d] text-[#a371f7] border border-[#30363d] transition-colors"
             >

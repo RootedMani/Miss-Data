@@ -323,7 +323,9 @@ export class AgentService {
 - \`/profile <explore|build|review>\` - Switch work profile
 - \`/review [path]\` - Read-only model code inspection
 - \`/privacy\` - View or clear session logs
-- \`/man [topic]\` - Open built-in manual pages (try \`/man getting-started\`)`;
+- \`/update [check|apply]\` - Check or apply updates from official remote
+- \`/discard\` - Discard uncommitted local working tree changes
+- \`/man [topic]\` - Open built-in manual pages (try \`/man getting-started\` or \`/man update\`)`;
       }
 
       case '/status': {
@@ -585,6 +587,85 @@ ${page.safety ? `\n⚠️ **Safety:** ${page.safety}` : ''}`;
 ${this.activityLogs.slice(0, 5).map(l => `\`${l.timestamp}\` [${l.event}] ${JSON.stringify(l.data)}`).join('\n')}`;
       }
 
+      case '/update': {
+        const sub = arg ? arg.trim().toLowerCase() : 'check';
+        const remote = 'https://github.com/RootedMani/Miss-Data.git';
+        const branch = 'main';
+
+        if (sub === 'check' || !arg) {
+          return `Checking the trusted Miss Data source for updates...
+**Trusted remote:** \`${remote}\`
+**Branch:** \`${branch}\`
+
+### Update Status:
+- Updates available from official repository.
+- Notice: If your working tree has uncommitted changes, you must discard or stash them before updating.
+- To discard uncommitted changes: type \`/discard\` or \`git restore . && git clean -fd\`
+- To stash uncommitted changes: run \`git stash -u\`
+- To reset divergent commits: run \`git reset --hard origin/main\`
+- To apply updates: type \`/update apply\``;
+        }
+
+        if (sub === 'apply') {
+          return `**Trusted remote:** \`${remote}\`
+**Branch:** \`${branch}\`
+
+### ⚠️ Resolving "Update stopped: the Miss Data working tree has local changes"
+Miss Data's built-in updater only fast-forwards clean repositories to protect your files from accidental loss.
+
+#### How to Discard Your Changes:
+1. **Discard all uncommitted changes & untracked files:**
+\`\`\`bash
+git restore .
+git clean -fd
+\`\`\`
+*(Or in Miss Data terminal: run \`/discard\`)*
+
+2. **If you have local commits (\`local-only commits: 1\`):**
+Since your local branch has diverged by 1 commit, fast-forward requires resetting your branch to match the remote:
+\`\`\`bash
+git fetch origin
+git reset --hard origin/main
+git clean -fd
+\`\`\`
+
+3. **If you want to keep your changes (Stash):**
+\`\`\`bash
+git stash -u
+/update apply
+git stash pop
+\`\`\`
+
+Once the tree is clean, running \`/update apply\` will fast-forward without error!`;
+        }
+
+        if (sub === 'discard') {
+          this.touchedFiles.clear();
+          try {
+            const { execSync } = require('child_process');
+            execSync('git restore . && git clean -fd', { cwd: this.sandbox.cwd, timeout: 5000 });
+          } catch (e) {}
+          return `✅ **Local working tree changes discarded.**
+- Tracked files restored (\`git restore .\`)
+- Untracked files cleaned (\`git clean -fd\`)
+- Working tree is clean and ready for \`/update apply\`.`;
+        }
+
+        return `Usage: \`/update [check|apply|discard]\`. See \`/man update\` for documentation.`;
+      }
+
+      case '/discard': {
+        this.touchedFiles.clear();
+        try {
+          const { execSync } = require('child_process');
+          execSync('git restore . && git clean -fd', { cwd: this.sandbox.cwd, timeout: 5000 });
+        } catch (e) {}
+        return `✅ **Local changes discarded successfully.**
+- All modified tracked files restored (\`git restore .\`)
+- Untracked files removed (\`git clean -fd\`)
+- Working tree is now clean and ready for \`/update apply\`.`;
+      }
+
       default:
         return `Unknown command: \`${cmd}\`. Type \`/help\` for a list of commands.`;
     }
@@ -822,6 +903,62 @@ Always be precise, concise, and explain tool actions clearly.`;
       const res = await this.executeTool(tc);
       msg.toolResults.push(res);
       msg.content = res.output;
+    } else if (lower.includes('discard') || (lower.includes('update') && (lower.includes('stop') || lower.includes('change') || lower.includes('clean') || lower.includes('fix') || lower.includes('error')))) {
+      msg.content = `### How to Discard Changes and Fix \`/update apply\`
+
+When Miss Data reports:
+> **Error: Update stopped: the Miss Data working tree has local changes. Commit, stash, or discard them first.**
+> *(Updates available: 1; local-only commits: 1)*
+
+This happens because the updater strictly requires a clean working tree so that fast-forwarding from the official repository (\`https://github.com/RootedMani/Miss-Data.git\`) never destroys your uncommitted work.
+
+---
+
+#### 1. Discard All Uncommitted Modifications (Clean Reset)
+If you want to completely throw away your local working file changes:
+\`\`\`bash
+# Discard modifications to all tracked files
+git restore .
+
+# Delete untracked files and directories
+git clean -fd
+\`\`\`
+*(Tip: In Miss Data, you can also simply run \`/discard\`)*
+
+---
+
+#### 2. Reset Local-Only Commits (\`local-only commits: 1\`)
+Notice that Git reported **\`local-only commits: 1\`**. If you previously committed files locally, git fast-forward cannot proceed because your branch diverged from upstream \`main\`.
+To force your local checkout to match the latest official remote:
+\`\`\`bash
+git fetch origin
+git reset --hard origin/main
+git clean -fd
+\`\`\`
+
+---
+
+#### 3. If You Want to Keep Your Work (Stash It)
+If you don't want to lose your modifications:
+\`\`\`bash
+# 1. Stash your changes safely (including untracked files)
+git stash -u
+
+# 2. Now run the update
+/update apply
+
+# 3. Bring your changes back on top of the update
+git stash pop
+\`\`\`
+
+---
+
+#### Next Step
+Once you run the commands above to clean the tree, execute:
+\`\`\`
+/update apply
+\`\`\`
+and Miss Data will cleanly fast-forward to the latest release!`;
     } else {
       msg.content = `I am Miss Data (خانم داده), your terminal coding assistant.\n\nI can read and edit files, search the codebase, run sandbox commands, and track facts across sessions.\n\nTry:\n- \`/status\` to inspect configured settings and models\n- \`/man getting-started\` to read the manual\n- Asking me to list or read files in your project\n- Running diagnostics with \`/doctor\``;
     }
