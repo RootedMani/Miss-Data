@@ -99,6 +99,54 @@ app.get('/api/memory', (req, res) => {
   res.json({ facts: agent.memoryFacts });
 });
 
+app.post('/api/memory/add', (req, res) => {
+  const { fact } = req.body;
+  if (!fact || typeof fact !== 'string') return res.status(400).json({ error: 'fact required' });
+  const id = agent.memoryFacts.length > 0 ? Math.max(...agent.memoryFacts.map(f => f.id)) + 1 : 1;
+  agent.memoryFacts.push({ id, fact: fact.trim(), createdAt: Date.now() });
+  res.json({ success: true, facts: agent.memoryFacts });
+});
+
+app.delete('/api/memory/:id', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const idx = agent.memoryFacts.findIndex(f => f.id === id);
+  if (idx !== -1) {
+    agent.memoryFacts.splice(idx, 1);
+  }
+  res.json({ success: true, facts: agent.memoryFacts });
+});
+
+// Git status and operations
+app.get('/api/git/status', (req, res) => {
+  const { getGitStatus } = require('./server/git.js');
+  const status = getGitStatus(agent.sandbox.cwd);
+  res.json(status);
+});
+
+app.get('/api/git/diff', (req, res) => {
+  const { getGitDiff } = require('./server/git.js');
+  const diff = getGitDiff(agent.sandbox.cwd);
+  res.json({ diff });
+});
+
+app.post('/api/git/action', (req, res) => {
+  const { action, message } = req.body;
+  const { performGitAction } = require('./server/git.js');
+  const result = performGitAction(action, agent.sandbox.cwd, { message });
+  if (action === 'discard' || action === 'reset-upstream') {
+    agent.touchedFiles.clear();
+  }
+  res.json(result);
+});
+
+// Direct shell execution in sandbox
+app.post('/api/terminal/exec', (req, res) => {
+  const { command } = req.body;
+  if (!command || typeof command !== 'string') return res.status(400).json({ error: 'command required' });
+  const result = agent.sandbox.runCommand(command);
+  res.json(result);
+});
+
 app.post('/api/config', (req, res) => {
   const updates = req.body;
   if (updates.provider) agent.settings.provider = updates.provider;

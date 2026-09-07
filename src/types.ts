@@ -71,3 +71,31 @@ export interface SessionItem {
   updatedAt: number;
   messageCount: number;
 }
+
+export interface GitStatus {
+  branch: string;
+  remoteUrl: string;
+  isClean: boolean;
+  modifiedFiles: string[];
+  untrackedFiles: string[];
+  ahead: number;
+  behind: number;
+  diverged: boolean;
+  lastCommit?: string;
+  error?: string;
+}
+
+export interface MemoryFact {
+  id: number;
+  fact: string;
+  createdAt: number;
+}
+
+export interface DirectCommandResult {
+  command: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  timestamp: number;
+}
+
