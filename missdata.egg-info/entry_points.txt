@@ -1,2 +1,0 @@
-[console_scripts]
-missdata = missdata.cli:main

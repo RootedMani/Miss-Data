@@ -1,0 +1,6 @@
+{
+  "name": "Miss Data",
+  "description": "A terminal coding agent. It reads and edits files, searches your codebase, runs shell commands, and remembers durable facts across sessions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
