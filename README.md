@@ -1,333 +1,282 @@
 # Miss Data (خانم داده)
 
-A terminal coding agent. It reads and edits files, searches your codebase, runs shell commands, and remembers durable facts across sessions — all from the command line. Works with **Groq**, **Anthropic (Claude)**, **Ollama** (local models), or any **OpenAI-compatible API** (DeepSeek, OpenAI, OpenRouter, Together AI, Mistral, Fireworks, xAI/Grok, Moonshot/Kimi, Perplexity, or a fully custom endpoint) as the LLM backend, switchable at any time.
+> **Autonomous Full-Stack Web & Terminal Coding Agent powered by Google Gemini**
 
-> **Complete reference:** See [DOCUMENTATION.md](DOCUMENTATION.md) for the full installation, architecture, provider, security, resilience, Ollama recovery, logging, troubleshooting, and development guide.
+Miss Data is an interactive, local-first coding assistant and development environment. It combines an autonomous AI coding loop with an intuitive web-based IDE, a sandboxed command runner, a workspace file explorer, integrated Git controls with instant rollback checkpoints, durable cross-session memory, and a built-in Unix `man`-style documentation manual.
 
-This is a CLI tool today; it's built so a web frontend can be layered on top of the same `missdata` package later (the `Agent` class in `missdata/agent.py` is UI-agnostic — the CLI is just one interface to it).
+Whether you are refactoring code, writing tests, exploring unfamiliar codebases, or inspecting Git diffs, Miss Data operates safely within your project workspace through strict path confinement and configurable human-in-the-loop approval gating.
 
 ---
 
-## 1. Requirements
+## Highlights & Features
 
-- Python 3.9 or newer
-- An API key for **at least one** provider:
-  - [Groq](https://console.groq.com/keys) (fast, generous free tier)
-  - [Anthropic](https://console.anthropic.com/settings/keys) (Claude models)
-  - [DeepSeek](https://platform.deepseek.com/api_keys), [OpenAI](https://platform.openai.com/api-keys), [OpenRouter](https://openrouter.ai/keys), [Together AI](https://api.together.ai/settings/api-keys), [Mistral](https://console.mistral.ai/api-keys), [Fireworks](https://fireworks.ai/api-keys), [xAI](https://console.x.ai), or [Moonshot](https://platform.moonshot.cn/console/api-keys) — any OpenAI-compatible service works out of the box
-  - or [Ollama](https://ollama.com) running locally — no API key needed
+- **Autonomous Coding Agent**: Powered by Google Gemini (`@google/genai`), capable of reading, creating, surgically editing, and searching files, executing shell commands, and iteratively solving complex engineering tasks.
+- **Interactive Web Terminal & IDE**: Real-time conversational interface with rich syntax highlighting, collapsible tool call traces, streaming status indicators, and turn-by-turn "Files Touched" summaries.
+- **Human-in-the-Loop Safeguards**: Granular approval policies (`risky`, `always`, `auto`). Risky actions like file overwrites, deletions, or shell commands require explicit approval unless pre-authorized.
+- **Strict Sandbox Confinement**: File operations are strictly confined to the active working directory to prevent path traversal (`../`) or accidental system file manipulation. Dangerous shell patterns (`rm -rf /`, `sudo`, fork bombs) are blocked.
+- **Visual Git & Checkpoint Management**: Live worktree inspection, color-coded unified diff viewer, one-click change discarding, and instant commit checkpoints with rollback capability.
+- **Sandboxed Shell Terminal Drawer**: Run shell commands directly in the project workspace with real-time stdout, stderr, and exit-code reporting.
+- **Workspace File Explorer & Editor**: Browse project files in real time, view syntax-highlighted source code, and perform manual edits directly in the browser.
+- **Durable Memory (`/memory`)**: Store long-term facts, developer preferences, and architectural rules that persist across conversations and session resets.
+- **Multi-Session Management (`/sessions`)**: Create, switch, rename, and manage multiple parallel sessions without losing conversation state.
+- **Built-in Unix Manual (`/man`)**: Comprehensive, zero-token in-app documentation with keyword search and actionable command examples.
 
-## 2. Install
+---
 
-### Linux / macOS
+## Tech Stack
 
-```bash
-git clone <this-repo-or-unzip-it>
-cd miss_data
-./setup.sh
-source .venv/bin/activate
-missdata
-```
-
-### Windows
-
-```bat
-git clone <this-repo-or-unzip-it>
-cd miss_data
-setup.bat
-.venv\Scripts\activate
-missdata
-```
-
-### Manual install (any OS, if you prefer)
-
-```bash
-python -m venv .venv
-# Linux/macOS:
-source .venv/bin/activate
-# Windows:
-.venv\Scripts\activate
-
-pip install -e .
-missdata
-```
-
-### Without installing at all
-
-If you just want to run it in place:
-
-```bash
-pip install -r requirements.txt
-python run.py
-```
-
-### SOCKS proxy users
-
-Miss Data supports `socks://` proxy environment variables from common desktop
-proxy clients by converting them to the `socks5://` form required by its HTTP
-client. Install the project's dependencies so SOCKS support is available:
-
-```bash
-pip install -r requirements.txt
-```
-
-If you do not intend to use a proxy, remove stale `ALL_PROXY`, `HTTP_PROXY`,
-and `HTTPS_PROXY` environment variables before launching the app.
-
-## 3. First run
-
-The first time you run `missdata`, it will ask for an API key for whichever provider you're using (Groq by default) and save it to a config file — it does **not** get stored inside the project folder, so it's safe from accidental commits. You can also set it up ahead of time:
-
-```bash
-missdata --set-key groq
-missdata --set-key anthropic
-missdata --set-key deepseek
-missdata --set-key openrouter
-missdata --set-key custom      # any other OpenAI-compatible endpoint
-missdata --add-key groq        # append additional Groq keys without displaying existing ones
-```
-
-Each `--set-key` prompt can collect multiple keys. Keys are tried in the order you provide them when the active provider reports an error or reaches a limit. Use `--add-key <provider>` or `/keys add <provider>` to append more keys later.
-
-Or set environment variables directly:
-
-```bash
-export GROQ_API_KEY=your_key_here          # Linux/macOS
-export ANTHROPIC_API_KEY=your_key_here
-export DEEPSEEK_API_KEY=your_key_here
-export OPENROUTER_API_KEY=your_key_here
-# ...and so on — see .env.example for the full list of provider env vars
-
-set GROQ_API_KEY=your_key_here             # Windows (cmd)
-$env:GROQ_API_KEY="your_key_here"          # Windows (PowerShell)
-```
-
-For an ordered pool, use the plural variable as a JSON array (the singular variable remains supported for backwards compatibility):
-
-```bash
-export GROQ_API_KEYS='["first_key", "second_key"]'
-export OPENAI_API_KEYS='["first_key", "second_key"]'
-```
-
-**Using a "custom" OpenAI-compatible endpoint** (self-hosted, enterprise gateway, or any provider not built in): point it at the base URL and model, then set the key under whatever env var name you like:
-
-```bash
-missdata --provider custom --base-url https://my-endpoint.example.com/v1 --model my-model
-missdata --set-key custom   # saved under CUSTOM_API_KEY by default; change with /api-key-env
-```
-
-## 4. Usage
-
-```bash
-missdata                          # start in the current directory
-missdata --dir /path/to/project   # start in a specific project directory
-missdata --provider anthropic     # use Claude for this session
-missdata --provider deepseek      # use DeepSeek for this session
-missdata --model llama-3.3-70b-versatile
-missdata --approval auto          # don't ask for confirmation on risky actions
-missdata --budget economy         # cap generated output at 768 tokens for a lower-cost session
-missdata --output-tokens 1024     # set a custom 128–16384 output-token cap
-missdata --context-recovery auto  # compact context and retry automatically after request-size errors
-missdata --ollama-recovery ask    # ask before starting local Ollama or downloading a missing model
-missdata --sandbox off            # disable the filesystem/command sandbox (see §6a)
-missdata -p "list the files in this repo"   # run one prompt non-interactively
-```
-
-Once inside, just type what you want:
-
-```
-You › find any TODO comments in this project and list them
-You › refactor the sort function in utils.py to use quicksort, then run the tests
-You › /provider deepseek
-You › create a Flask app with a health check endpoint
-```
-
-### Slash commands
-
-| Command | What it does |
+| Layer | Technology |
 |---|---|
-| `/help` | Show available commands |
-| `/status` | Show the active provider, model, output budget, safeguards, recovery settings, and log path |
-| `/doctor` | Run no-model-cost provider/workspace diagnostics; checks local Ollama without generating text |
-| `/changes` | Show a read-only Git worktree and diff-statistics summary |
-| `/budget <profile\|tokens>` | Set response cap: `economy` (768), `balanced` (2048), `thorough` (4096), or custom 128–16384 |
-| `/exit`, `/quit` | Exit |
-| `/clear` | Clear the conversation (keeps long-term memory) |
-| `/compact [n]` | Summarize older turns into one note to shrink context; optionally keep the last `n` turns verbatim |
-| `Ctrl+C` while generating | Stop the active model response safely; partial output and the unfinished turn are not saved to conversation history |
-| `/memory` | Show remembered facts |
-| `/forget <n>` | Remove remembered fact `n` |
-| `/cwd [path]` | Show or change the working directory |
-| `/provider <name>` | Switch LLM backend mid-session (`groq`, `anthropic`, `ollama`, `deepseek`, `openai`, `openrouter`, `together`, `mistral`, `fireworks`, `xai`, `moonshot`, `perplexity`, or `custom`) |
-| `/keys` | Show the number of configured keys for each provider without exposing the keys |
-| `/keys show <provider> [reveal]` | View key slots masked by default; `reveal` asks before printing full values |
-| `/keys add <provider>` | Append one or more keys to a provider's automatic retry pool |
-| `/keys replace <provider>` | Replace a provider's complete key pool securely |
-| `/keys edit <provider> <number>` | Replace one key slot securely |
-| `/keys remove <provider> <number>` | Remove one key slot after confirmation |
-| `/fallback` | Show the ordered providers that can be offered after the active provider is exhausted |
-| `/fallback set <provider,...>` | Set the order in which configured alternative providers are offered |
-| `/fallback off` | Disable cross-provider offers while keeping same-provider key rotation enabled |
-| `/context-recovery <ask\|auto\|off>` | On context/token-limit errors, ask before compacting, compact automatically, or disable this recovery |
-| `/ollama-recovery <ask\|auto\|off>` | On local Ollama connection/model errors, ask before repair, repair automatically, or disable repair |
-| `/logs` | Print the current session's activity log file path |
-| `/model <name>` | Change the model for the current provider |
-| `/ollama-url <url>` | Set the Ollama server URL (default `http://localhost:11434`) |
-| `/base-url <url>` | Set the API base URL used by the `custom` provider |
-| `/api-key-env <VAR>` | Set which environment variable the `custom` provider reads its key from |
-| `/approval <always\|risky\|auto>` | Change confirmation behavior |
-| `/sandbox <on\|off>` | Confine file tools to cwd + block dangerous commands (default: on) |
-| `/lang <en\|fa>` | Set the assistant's response language (English is the default) |
+| **Frontend** | React 18, TypeScript, Tailwind CSS v4, Motion (Framer Motion), Lucide Icons, Vite |
+| **Backend** | Node.js, Express, ES Modules, `@google/genai` (Google Gen AI SDK), `child_process` |
+| **Tooling & Bundling** | Vite (Client build), `esbuild` (Server CJS bundle), `tsx` (TypeScript development runtime) |
 
-## 5. Resilience, provider switching, and logs
+---
 
-Miss Data first retries the current provider with the next configured key. If its configured key pool is exhausted, it finds the next configured provider in the `/fallback` order and **asks before switching companies**. For example, a failed OpenAI request can prompt: `Switch to Groq (...) and retry your request? [y/N]`. A refusal leaves the provider unchanged and reports the original failure. This protects you from an unapproved switch to a different account, pricing model, or data processor.
-
-A provider change starts a fresh conversation because tool-call message formats differ across APIs. If actions have already run in that turn, the confirmation clearly warns that replaying the original request could repeat them. The program does not silently switch a provider in `--prompt` mode because that mode is non-interactive.
-
-Before rotating a key or offering a different provider, Miss Data now detects request-size, context-window, and token-per-minute size errors such as Groq `413` errors. With the default `/context-recovery ask`, it asks: `Compact older conversation context and retry? [y/N]`. It uses the built-in summary compaction while preserving the newest turn, so the failed request can be retried; if the provider cannot summarize the old history because that summary is also too large, it safely discards only older complete turns and clearly records that fact. Set `/context-recovery auto` (or launch with `--context-recovery auto`) to approve this recovery in advance, or `/context-recovery off` to bypass it. A single oversized user message cannot be made smaller automatically, so that situation still requires shortening the request.
-
-When the active provider is Ollama and it reports a connection-refused or missing-model failure, Miss Data identifies the problem before provider failover. With the default `/ollama-recovery ask`, it asks permission to run the narrowly scoped local repair: `ollama serve` for a stopped local server, or `ollama pull <model>` for a missing model. It retries the original request once after a confirmed repair. `/ollama-recovery auto` pre-approves only those local actions; `/ollama-recovery off` disables them. The application refuses to self-start a remote Ollama endpoint and never sends recovery commands through a shell.
-
-Each session writes a privacy-conscious, newline-delimited JSON activity log. It records prompts, provider attempts, key fingerprints (never key values), provider responses, tool requests/results, approvals, switches, errors, cancellations, and files touched. Values that look like API keys, tokens, passwords, authorization headers, or known environment secrets are redacted before logging. At startup the CLI prints the file location; use `/logs` to show it again.
-
-## 5a. Key management, safe stop, and line editing
-
-Use `/keys show <provider>` to inspect a provider's configured key slots. The default view masks each value and shows only a short fingerprint for identification. `/keys show <provider> reveal` requires a separate confirmation before it prints full values to the terminal; this is intentionally explicit because terminal scrollback and recordings can expose secrets. Keys are entered with hidden input for `/keys add`, `/keys replace`, and `/keys edit`, and removals require confirmation. Changes to the active provider take effect immediately.
-
-Press **Ctrl+C once** while the model is thinking or streaming its answer to stop the active response safely. Already printed text remains visible, but the incomplete response and its matching unfinished user turn are excluded from conversation history, preventing a broken half-turn from affecting the next request. Cancellation is recorded in the session log and does not trigger key rotation or provider failover.
-
-The project now includes `prompt_toolkit` for interactive terminal input. On Linux and other TTY environments, it provides normal cursor movement, backspace/delete behavior across the current command line, and persistent up/down command history saved in the Miss Data configuration directory. Colored prompts are passed through the editor’s ANSI-aware formatter, so terminal style codes render as colors instead of appearing as literal `^[` characters. The REPL transparently uses ordinary standard input in non-interactive contexts or if the optional editor cannot initialize.
-
-| Platform | Log directory |
-|---|---|
-| Linux | `~/.config/missdata/logs/` |
-| macOS | `~/Library/Application Support/missdata/logs/` |
-| Windows | `%APPDATA%\\missdata\\logs\\` |
-
-## 6. Approval modes
-
-Miss Data can take real actions on your machine (writing files, running shell commands, deleting things). You control how cautious it is:
-
-- **`always`** — confirm every tool call, even read-only ones.
-- **`risky`** *(default)* — only confirm risky actions: writing/editing/deleting files, moving files, and running shell commands. Reads, searches, and directory listings run without asking.
-- **`auto`** — never ask; the agent acts freely. Use this only in throwaway/sandboxed environments or when you trust the task fully.
-
-Set it with `--approval` at launch, or `/approval <mode>` mid-session. During an approval prompt, answering `a` approves that tool type for the rest of the session.
-
-## 6a. Sandbox (on by default)
-
-Independently of approval mode, Miss Data sandboxes what its tools are physically able to do:
-
-- **Filesystem confinement.** `read_file`, `write_file`, `edit_file`, `delete_path`, `move_path`, `make_dir`, `list_dir`, `search_files`, and `grep` cannot resolve to anything outside the agent's working directory — not via `../..`, not via an absolute path, not via a symlink that points outside it. An attempt is refused with a clear error instead of silently failing or touching the wrong file.
-- **Command guarding.** `run_command` and `run_python` refuse a short deny-list of unambiguously destructive patterns (`rm -rf /`, disk-wiping `dd`/`mkfs`, fork bombs, `shutdown`/`reboot`, `sudo`, `curl | sh`-style pipe-to-shell, recursive `chmod`/`chown` on `/`). This is a safety net for footguns, not a general security boundary.
-- **Resource limits + clean timeouts.** Shell/Python commands run with best-effort CPU, memory, and process-count limits (POSIX only), and on timeout the *entire process group* is killed — so a command that spawns children (a dev server, a pipeline) can't outlive its timeout as an orphan.
-
-This is confinement for a trusted local agent, not a hardened multi-tenant jail — inside the working directory, `run_command` still has real shell access within the resource limits. Turn it off with `--sandbox off` or `/sandbox off` if you fully trust a task and need it to reach outside the project directory; do this only in a throwaway or already-trusted environment. The banner shows current sandbox status on startup.
-
-## 7. What it can do (tools)
-
-- `read_file`, `write_file`, `edit_file` (precise find/replace), `delete_path`, `move_path`, `make_dir`
-- `list_dir` (tree view, skips `.git`/`node_modules`/etc.), `search_files` (glob), `grep` (content search)
-- `run_command` — shell command in the working directory (bash on Linux/macOS, cmd on Windows), sandboxed as above
-- `run_python` — quick Python snippet (`python -c <code>`) without writing a temp file, same sandboxing as `run_command`
-- `web_search` — search the public web and return source titles/URLs. Uses the Brave Search API if `BRAVE_API_KEY` is set (free tier at https://brave.com/search/api/, more reliable); otherwise falls back automatically to scraping DuckDuckGo, which needs no key but can occasionally be rate-limited. Queries must not contain secrets or private code
-- `remember_fact` — saves a durable fact to memory, available in future sessions
-
-After each turn, Miss Data prints a **"Files touched this turn"** summary listing every file it created, edited, deleted, or moved — so it's always clear what changed on disk without scrolling back through the tool-call log.
-
-## 8. Project layout
+## Architecture Overview
 
 ```
-miss_data/
-├── missdata/
-│   ├── cli.py            # argument parsing, REPL, slash commands
-│   ├── agent.py           # core turn loop, approval gating
-│   ├── providers.py        # Groq, Anthropic, Ollama, and OpenAI-compatible (DeepSeek, etc.) adapters behind one interface
-│   ├── tools.py            # file/shell tool implementations + schemas
-│   ├── sandbox.py          # path confinement, dangerous-command deny-list, resource limits
-│   ├── memory.py           # persistent facts
-│   ├── config.py           # settings + API key storage (cross-platform paths)
-│   ├── activity.py         # structured session logging with secret redaction
-│   ├── ollama_recovery.py  # safe local Ollama server/model repair helpers
-│   ├── insights.py         # no-model-cost Git and local Ollama diagnostics
-│   ├── terminal_input.py   # editable terminal prompt and persistent history
-│   ├── ui.py               # terminal colors/formatting
-│   └── system_prompt.md    # agent's instructions
-├── run.py                  # run without installing
-├── setup.sh / setup.bat    # one-step venv + install
-├── pyproject.toml
-├── requirements.txt
-└── DOCUMENTATION.md        # complete user and maintainer reference
+┌─────────────────────────────────────────────────────────────┐
+│                 Miss Data Web IDE Interface                 │
+│  Terminal • File Explorer • Git Panel • Shell • Manual      │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ HTTP / REST API
+┌──────────────────────────────▼──────────────────────────────┐
+│                    Express Backend Server                   │
+│   /api/chat • /api/approval • /api/files • /api/git • ...   │
+└──────────────┬───────────────────────────────┬──────────────┘
+               │                               │
+┌──────────────▼──────────────┐ ┌──────────────▼──────────────┐
+│    Gemini Agent Service     │ │      Sandbox Controller     │
+│   • Tool calling loop       │ │   • Path confinement        │
+│   • Human approvals         │ │   • Command blocklist       │
+│   • Memory & Sessions       │ │   • File operations & grep  │
+└──────────────┬──────────────┘ └──────────────┬──────────────┘
+               │                               │
+        Google Gemini API                Local Workspace
 ```
 
-## 9. Where config lives
+---
 
-- Linux: `~/.config/missdata/`
-- macOS: `~/Library/Application Support/missdata/`
-- Windows: `%APPDATA%\missdata\`
+## Quick Start
 
-This holds `settings.json` (provider/model/approval choice and fallback order), `memory.json` (remembered facts), `.env` (API keys and optional pools), and `logs/` (session activity records) — separate from any project you point it at.
+### Prerequisites
 
-## 10. Security notes
+- **Node.js** 18+ (or Bun)
+- **Git** installed on your system
+- A **Gemini API Key** from [Google AI Studio](https://aistudio.google.com/)
 
-- API keys are stored in your user config directory, not inside a project folder, so they won't get committed to a repo by accident. Key-pool values are never printed or placed in activity logs.
-- Activity logs retain prompts and tool output so treat `logs/` as sensitive local data. The logger redacts credential-like values and creates session files with user-only permissions where the operating system supports them.
-- `run_command`/`run_python` execute real code with your user's permissions, subject to the sandbox described in §5a — review what's about to run, especially in `auto` approval mode.
-- The sandbox confines *where* tools can act and blocks the most obviously destructive commands; it does not vet arbitrary code for subtler harm. Review risky actions, especially in `auto` mode.
-- The agent refuses to write malware/exploits and will flag obvious security issues (SQL injection, hardcoded secrets, etc.) it notices in code it touches, but it is not a substitute for a real security review.
+### 1. Installation
 
-## 11. Roadmap (web version)
+Clone the repository and install dependencies:
 
-The `Agent` class is deliberately decoupled from the terminal (`ui.py` is the only CLI-specific piece it talks to indirectly via callbacks). A future web frontend can drive `missdata.agent.Agent` directly — swap the input/output layer, keep the tool execution and provider logic as-is.
+```bash
+git clone https://github.com/RootedMani/Miss-Data.git
+cd Miss-Data
 
-## 8. Local-first coding workflows
+# Install npm dependencies
+npm install
+```
 
-Miss Data now includes a set of optional workflows designed to reduce unnecessary API use while making edits easier to inspect and undo. These features are local-first: project mapping, test discovery, Git summaries, session storage, and privacy cleanup operate on the local machine and do not require a model call unless a command explicitly starts one.
+### 2. Configure Environment
 
-| Workflow | Command | Behavior and safety boundary |
+Create a `.env` file in the root directory (based on `.env.example`):
+
+```bash
+cp .env.example .env
+```
+
+Add your Gemini API key to `.env`:
+
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+```
+
+### 3. Start Development Server
+
+Launch the full-stack application (frontend + backend via `tsx` and Vite):
+
+```bash
+npm run dev
+```
+
+Open your browser and navigate to **`http://localhost:3000`**.
+
+### 4. Production Build
+
+To compile both client and server for production:
+
+```bash
+# Builds Vite static assets and bundles server.ts to dist/server.cjs
+npm run build
+
+# Start production server
+npm start
+```
+
+---
+
+## Interface Tour
+
+### 1. Interactive Agent Terminal
+The main view functions like an intelligent developer terminal. When you ask Miss Data to solve a task:
+- The agent reasons through the solution and calls tools autonomously.
+- If an action is marked **Risky** (such as editing code or running a script), a pending approval card appears with **Approve**, **Approve All (Turn)**, or **Reject** buttons.
+- Tool executions show live collapsible accordions with exact inputs and outputs.
+- At the end of each turn, a green **Files Touched** banner clearly lists all modified files.
+
+### 2. Workspace Explorer
+Click **Workspace** in the top navigation bar to open the file explorer drawer:
+- Navigate files and directories in real time.
+- Click any file to view its contents in an editor.
+- Make manual changes and click **Save Changes** to write directly to disk.
+
+### 3. Git Control & Checkpoints
+Click **Git** in the header to open the version control panel:
+- **Worktree Status**: See your current branch, remote status, ahead/behind counts, and clean/dirty state.
+- **Diff Viewer**: View live colorized unified diffs of uncommitted changes.
+- **Checkpoints**: Click **Create Checkpoint** to create an instantaneous named commit before risky modifications.
+- **Discard & Rollback**: Revert uncommitted changes with **Discard Changes** or roll back to previous checkpoints with one click.
+
+### 4. Sandboxed Shell Drawer
+Click **Shell** in the header to open a direct command runner:
+- Execute commands (e.g. `npm test`, `git log`, `ls -la`, `cat file`) directly in the workspace.
+- View standard output, error streams, and exit codes in real time.
+
+### 5. Multi-Session Drawer
+Click the session title or **Sessions** button:
+- View saved conversations, message counts, and timestamps.
+- Start a new clean session, rename the active session, or switch between prior tasks.
+
+### 6. Durable Memory (`/memory`)
+Click **Memory** to open long-term facts:
+- Store persistent instructions (e.g., *"Always write unit tests using Vitest"*, *"Use 2-space indentation"*).
+- Miss Data automatically injects these facts into every future system prompt.
+
+---
+
+## Slash Commands Reference
+
+Type these commands directly into the terminal prompt or command palette:
+
+| Command | Arguments | Description |
 |---|---|---|
-| Project onboarding | `/map` | Builds a local project overview, detects common manifests and languages, and suggests a test command without sending project content to a provider. |
-| Test discovery | `/test` | Lists inferred test commands. `/test run <n>` runs a selected command only through the existing approval controls. |
-| Context meter | `/context` | Shows an approximate character/token estimate for the current conversation. It is not a provider billing value. |
-| Planned execution | `/mode plan` | Requests a no-tool implementation plan for each normal request. Use `/approve` to execute the pending request or `/reject` to discard it. `/mode direct` restores normal behavior. |
-| Change inspection | `/diff [revision]` | Shows a bounded read-only Git diff. |
-| Checkpoints | `/checkpoint [name]` | Stages and commits all current project changes only after confirmation. `/checkpoints` lists recent commits. |
-| Rollback | `/restore <revision>` | Performs a confirmed hard restore to a listed commit. It warns that uncommitted changes will be lost. |
-| Sessions | `/sessions`, `/resume <id>`, `/session-name`, `/new-session`, `/delete-session` | Saves conversation state locally so users can resume work without rebuilding context. |
-| Work profiles | `/profile explore|build|review` | Applies a lower-output exploration mode, a build mode, or a plan-first review mode. Profiles do not silently change the selected provider or account. |
-| Code review | `/review [path]` | Starts an explicitly read-only model review. It exposes only safe inspection tools: no writes, deletes, moves, or shell-command execution. |
-| Privacy cleanup | `/privacy` | Displays local session, history, and log locations. `/privacy clear logs|sessions|history|all` requests confirmation before deletion. |
-| Shell completion | `/completion bash|zsh|fish` | Prints a basic completion definition for common launch options. |
+| `/help` | `[topic]` | Displays the commands index or opens a specific manual page |
+| `/man` | `[topic]` | Opens the built-in Unix man-page manual modal |
+| `/status` | — | Displays active model, sandbox mode, approval policy, and token budget |
+| `/doctor` | — | Runs no-model-cost diagnostics on workspace paths, Git, and environment |
+| `/map` | — | Analyzes workspace structure, detected languages, manifests, and test suites |
+| `/test` | `[run N]` | Discovers available test commands; runs selected test through approval gating |
+| `/review` | `[path]` | Performs a read-only code review without modifying any files |
+| `/diff` | `[revision]` | Displays unified diff of uncommitted changes or specified revision |
+| `/checkpoint` | `[name]` | Stages and commits current working tree as a named restore point |
+| `/restore` | `<revision>` | Confirms and executes hard rollback to a listed Git commit |
+| `/discard` | — | Reverts all uncommitted changes (`git restore . && git clean -fd`) |
+| `/approval` | `always\|risky\|auto` | Changes tool approval mode |
+| `/sandbox` | `on\|off` | Enables or disables working-directory confinement |
+| `/budget` | `economy\|balanced\|thorough\|<N>` | Sets maximum output token budget cap |
+| `/mode` | `direct\|plan` | Switches between direct execution and plan-first confirmation mode |
+| `/memory` | — | Displays remembered long-term facts |
+| `/forget` | `<number>` | Deletes a stored memory fact by index |
+| `/sessions` | — | Lists saved conversations and session IDs |
+| `/new-session` | `[title]` | Archives current session and opens a fresh conversation |
+| `/cwd` | `[path]` | Shows or updates the active sandbox working directory |
+| `/clear` | — | Clears messages in the active session (preserves memory facts) |
+| `/lang` | `en\|fa` | Sets agent response language (English / Persian) |
 
-### Self-update from trusted source
+---
 
-Use `/update` to check the active Miss Data source checkout against the trusted official repository. Use `/update apply` to fast-forward it after a separate confirmation. The updater refuses arbitrary remotes, detached checkouts, dirty source trees, merges, and overwrites; it only runs a Git fast-forward update from `https://github.com/RootedMani/Miss-Data.git`. After an update, restart Miss Data. If the update changed dependencies, run `pip install -r requirements.txt` from the Miss Data source directory.
+## Safety & Security Model
 
-A natural-language request such as “update yourself” is also routed through the restricted update tool. It checks first and asks the user before applying an update. The update mechanism never accepts an arbitrary repository URL or executes provider-supplied shell commands.
+Miss Data was designed from the ground up to prevent unintended destruction of your code:
 
-> **Local data note.** Saved sessions contain conversation messages so that they can be resumed. Treat `~/.config/missdata/sessions/` as sensitive local data, like the existing logs directory. Use `/privacy` if the records should be removed.
+### 1. The Sandbox Confinement Layer
+- All file tools (`read_file`, `write_file`, `edit_file`, `delete_path`, etc.) are resolved against the canonical project root.
+- Path traversal exploits (`../../etc/passwd`, absolute root paths, external symlinks) are caught and rejected immediately.
+- Shell commands run strictly with `cwd` set to the project root.
 
-The full command and safety reference is maintained in [DOCUMENTATION.md](DOCUMENTATION.md).
+### 2. Destructive Command Deny-List
+Commands executed by the agent or in the shell drawer are inspected for high-risk patterns. Destructive patterns are blocked:
+- Root deletion (`rm -rf /`, `rm -rf /*`, `rm -rf ~`)
+- Partition formatters (`mkfs`, `dd if=... of=/dev/...`)
+- System power commands (`shutdown`, `reboot`, `init 0`)
+- Privilege escalation (`sudo`, `su -`)
+- Fork bombs and uncontrolled pipelines (`:(){ :|:& };:`, `curl ... | sh`)
 
-### Portable settings backup
+### 3. Approval Gating
+- **`risky` (Default)**: Automatically runs read-only actions (`read_file`, `list_dir`, `search_files`, `grep`); prompts for your approval before writing files, deleting files, or executing shell commands.
+- **`always`**: Prompts before every single tool action.
+- **`auto`**: Runs without prompting (recommended only in isolated containers or disposable sandboxes).
 
-Use `/export-config [path]` to create a small, portable JSON backup of **settings only**. It includes provider/model preferences, recovery policies, budget and work-profile settings, sandbox/approval configuration, and fallback order. It deliberately excludes API keys, `.env` values, logs, prompt history, and saved conversations. Use `/import-config <path>` to inspect and apply a compatible backup after confirmation. If an imported provider cannot initialize with the keys on the new machine, the existing settings remain active.
+### 4. Secret Redaction
+Activity logs, terminal outputs, and session snapshots automatically redact detected API keys, authorization tokens, and credentials.
 
-## 9. Built-in manual and guided help
+---
 
-Miss Data now includes a terminal manual inspired by Linux `man` pages. Use `/man` to see topics, `/man <topic>` to read a focused guide, and `/man search <words>` to find related topics without spending model tokens. `/help` remains a compact command list, while `/help <topic>` opens the same focused manual page.
+## Project Directory Structure
 
-| Need | Command |
-|---|---|
-| Learn the basics | `/man getting-started` |
-| See all manual topics | `/man` |
-| Find help by keyword | `/man search ollama` |
-| Manage keys/providers | `/man keys` or `/man providers` |
-| Learn recovery and limits | `/man resilience` |
-| Understand plan, test, review, and Git workflows | `/man workflows` or `/man git` |
-| Understand saved conversations and privacy | `/man sessions` or `/man privacy` |
-| Update the program safely | `/man update` |
-| Diagnose a problem | `/man troubleshooting` |
+```
+Miss-Data/
+├── server/                     # Backend agent services & tooling
+│   ├── agent.ts                # Gemini agent engine, tool loop, slash commands
+│   ├── git.ts                  # Git status, diff, checkpoint, and rollback actions
+│   ├── manual.ts               # Unix man-page style manual registry and search
+│   ├── sandbox.ts              # File confinement, safety checks, and command execution
+│   └── types.ts                # Server-side TypeScript interfaces and data models
+├── src/                        # Frontend React 18 Application
+│   ├── components/             # Modular UI components
+│   │   ├── CommandPalette.tsx  # Quick shortcut & command launcher
+│   │   ├── GitPanel.tsx        # Visual Git control, diffs, and checkpoints
+│   │   ├── ManualModal.tsx     # In-app interactive manual viewer
+│   │   ├── MemoryModal.tsx     # Durable memory facts editor
+│   │   ├── SessionsDrawer.tsx  # Multi-session manager
+│   │   ├── SettingsModal.tsx   # Model, approval, and budget configuration
+│   │   ├── ShellDrawer.tsx     # Direct sandboxed command terminal
+│   │   ├── Terminal.tsx        # Chat stream, approval cards, and tool accordions
+│   │   ├── WorkflowsPanel.tsx  # Quick workflow action shortcuts (/map, /test, etc.)
+│   │   └── WorkspaceExplorer.tsx # Real-time file explorer and editor
+│   ├── App.tsx                 # Root application shell and header layout
+│   ├── index.css               # Global Tailwind CSS styling
+│   ├── main.tsx                # React DOM entry point
+│   └── types.ts                # Client-side TypeScript interfaces
+├── DOCUMENTATION.md            # Comprehensive technical reference manual
+├── README.md                   # Project overview and quick start guide
+├── index.html                  # HTML entry point
+├── metadata.json               # Platform configuration and capabilities
+├── package.json                # Project dependencies and build scripts
+├── server.ts                   # Express server entry point & Vite middleware
+├── tsconfig.json               # TypeScript compilation settings
+└── vite.config.ts              # Vite build and development configuration
+```
 
-The agent system prompt also receives a capability reference generated from the same manual source. When users ask questions such as “How do I resume a session?” or “Can Miss Data review code without editing it?”, the model is instructed to provide the exact supported command, state relevant safety boundaries, and recommend the appropriate `/man` page. It is instructed not to invent commands or features.
+---
+
+## REST API Reference
+
+The backend provides a clean REST API utilized by the frontend:
+
+- `POST /api/chat`: Send a prompt or slash command to the agent loop.
+- `POST /api/approval`: Resolve a pending tool approval (`approve`, `always`, or `reject`).
+- `GET /api/status`: Retrieve active agent configuration, memory count, and sandbox status.
+- `POST /api/config`: Update agent settings (model, approval mode, token budget, etc.).
+- `GET /api/files`: List directory contents within the sandbox.
+- `GET /api/file`: Read file contents.
+- `POST /api/file`: Save or update a file.
+- `GET /api/git/status`: Get branch, remote, and worktree status.
+- `GET /api/git/diff`: Get unified diff of uncommitted changes.
+- `POST /api/git/action`: Execute a Git action (`checkpoint`, `discard`, `commit`, etc.).
+- `POST /api/terminal/exec`: Run a shell command in the sandbox.
+- `GET /api/manual`: Retrieve all manual pages or search query matches.
+- `GET /api/memory`: Get all durable memory facts.
+- `POST /api/memory/add`: Add a new durable memory fact.
+- `DELETE /api/memory/:id`: Delete a durable memory fact.
+- `GET /api/sessions`: List saved conversation sessions.
+- `POST /api/sessions`: Create, switch, or rename a session.
+
+For complete API payload schemas, request/response examples, and error codes, refer to [DOCUMENTATION.md](DOCUMENTATION.md).
+
+---
+
+## License
+
+This project is licensed under the MIT License.
