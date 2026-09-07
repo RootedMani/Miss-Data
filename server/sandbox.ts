@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 
 export class Sandbox {
   public cwd: string;
@@ -226,7 +227,6 @@ export class Sandbox {
 
     try {
       // Execute in sandbox cwd
-      const { execSync } = require('child_process');
       const output = execSync(cmd, {
         cwd: this.cwd,
         timeout: 10000,

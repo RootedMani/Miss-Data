@@ -17,6 +17,9 @@ export function MemoryModal({ isOpen, onClose, onMemoryChanged }: MemoryModalPro
   const fetchMemory = async () => {
     try {
       const res = await fetch('/api/memory');
+      if (!res.ok) return;
+      const contentType = res.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) return;
       const data = await res.json();
       setFacts(data.facts || []);
     } catch (e) {

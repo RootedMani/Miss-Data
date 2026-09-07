@@ -47,20 +47,26 @@ export function App() {
   const fetchStatus = async () => {
     try {
       const res = await fetch('/api/status');
+      if (!res.ok) return;
+      const contentType = res.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) return;
       const data = await res.json();
       setStatus(data);
     } catch (e) {
-      console.error(e);
+      console.error('Error fetching status:', e);
     }
   };
 
   const fetchGitStatus = async () => {
     try {
       const res = await fetch('/api/git/status');
+      if (!res.ok) return;
+      const contentType = res.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) return;
       const data = await res.json();
       setGitStatus(data);
     } catch (e) {
-      console.error(e);
+      console.error('Error fetching git status:', e);
     }
   };
 

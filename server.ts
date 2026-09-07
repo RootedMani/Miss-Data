@@ -3,6 +3,8 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { AgentService } from './server/agent.js';
+import { searchManual, MANUAL_PAGES } from './server/manual.js';
+import { getGitStatus, getGitDiff, performGitAction } from './server/git.js';
 
 dotenv.config();
 
@@ -78,21 +80,27 @@ app.post('/api/file', (req, res) => {
 });
 
 app.get('/api/manual', (req, res) => {
-  const query = req.query.q as string;
-  const { searchManual, MANUAL_PAGES } = require('./server/manual.js');
-  if (query) {
-    res.json(searchManual(query));
-  } else {
-    res.json(Object.values(MANUAL_PAGES));
+  try {
+    const query = req.query.q as string;
+    if (query) {
+      res.json(searchManual(query));
+    } else {
+      res.json(Object.values(MANUAL_PAGES));
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
 app.get('/api/manual/:topic', (req, res) => {
-  const topic = req.params.topic.toLowerCase();
-  const { MANUAL_PAGES } = require('./server/manual.js');
-  const page = MANUAL_PAGES[topic];
-  if (!page) return res.status(404).json({ error: 'Topic not found' });
-  res.json(page);
+  try {
+    const topic = req.params.topic.toLowerCase();
+    const page = MANUAL_PAGES[topic];
+    if (!page) return res.status(404).json({ error: 'Topic not found' });
+    res.json(page);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/memory', (req, res) => {
@@ -100,51 +108,72 @@ app.get('/api/memory', (req, res) => {
 });
 
 app.post('/api/memory/add', (req, res) => {
-  const { fact } = req.body;
-  if (!fact || typeof fact !== 'string') return res.status(400).json({ error: 'fact required' });
-  const id = agent.memoryFacts.length > 0 ? Math.max(...agent.memoryFacts.map(f => f.id)) + 1 : 1;
-  agent.memoryFacts.push({ id, fact: fact.trim(), createdAt: Date.now() });
-  res.json({ success: true, facts: agent.memoryFacts });
+  try {
+    const { fact } = req.body;
+    if (!fact || typeof fact !== 'string') return res.status(400).json({ error: 'fact required' });
+    const id = agent.memoryFacts.length > 0 ? Math.max(...agent.memoryFacts.map(f => f.id)) + 1 : 1;
+    agent.memoryFacts.push({ id, fact: fact.trim(), createdAt: Date.now() });
+    res.json({ success: true, facts: agent.memoryFacts });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.delete('/api/memory/:id', (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const idx = agent.memoryFacts.findIndex(f => f.id === id);
-  if (idx !== -1) {
-    agent.memoryFacts.splice(idx, 1);
+  try {
+    const id = parseInt(req.params.id, 10);
+    const idx = agent.memoryFacts.findIndex(f => f.id === id);
+    if (idx !== -1) {
+      agent.memoryFacts.splice(idx, 1);
+    }
+    res.json({ success: true, facts: agent.memoryFacts });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
-  res.json({ success: true, facts: agent.memoryFacts });
 });
 
 // Git status and operations
 app.get('/api/git/status', (req, res) => {
-  const { getGitStatus } = require('./server/git.js');
-  const status = getGitStatus(agent.sandbox.cwd);
-  res.json(status);
+  try {
+    const status = getGitStatus(agent.sandbox.cwd);
+    res.json(status);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/git/diff', (req, res) => {
-  const { getGitDiff } = require('./server/git.js');
-  const diff = getGitDiff(agent.sandbox.cwd);
-  res.json({ diff });
+  try {
+    const diff = getGitDiff(agent.sandbox.cwd);
+    res.json({ diff });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message, diff: '' });
+  }
 });
 
 app.post('/api/git/action', (req, res) => {
-  const { action, message } = req.body;
-  const { performGitAction } = require('./server/git.js');
-  const result = performGitAction(action, agent.sandbox.cwd, { message });
-  if (action === 'discard' || action === 'reset-upstream') {
-    agent.touchedFiles.clear();
+  try {
+    const { action, message } = req.body;
+    const result = performGitAction(action, agent.sandbox.cwd, { message });
+    if (action === 'discard' || action === 'reset-upstream') {
+      agent.touchedFiles.clear();
+    }
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ success: false, output: err.message });
   }
-  res.json(result);
 });
 
 // Direct shell execution in sandbox
 app.post('/api/terminal/exec', (req, res) => {
-  const { command } = req.body;
-  if (!command || typeof command !== 'string') return res.status(400).json({ error: 'command required' });
-  const result = agent.sandbox.runCommand(command);
-  res.json(result);
+  try {
+    const { command } = req.body;
+    if (!command || typeof command !== 'string') return res.status(400).json({ error: 'command required' });
+    const result = agent.sandbox.runCommand(command);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ stdout: '', stderr: err.message, exitCode: 1 });
+  }
 });
 
 app.post('/api/config', (req, res) => {

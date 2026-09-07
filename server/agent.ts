@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import { GoogleGenAI } from '@google/genai';
 import { AgentSettings, Message, ToolCall, ToolResult, MemoryFact, SessionInfo, ActivityLogEvent } from './types.js';
 import { Sandbox } from './sandbox.js';
@@ -642,7 +643,6 @@ Once the tree is clean, running \`/update apply\` will fast-forward without erro
         if (sub === 'discard') {
           this.touchedFiles.clear();
           try {
-            const { execSync } = require('child_process');
             execSync('git restore . && git clean -fd', { cwd: this.sandbox.cwd, timeout: 5000 });
           } catch (e) {}
           return `✅ **Local working tree changes discarded.**
@@ -657,7 +657,6 @@ Once the tree is clean, running \`/update apply\` will fast-forward without erro
       case '/discard': {
         this.touchedFiles.clear();
         try {
-          const { execSync } = require('child_process');
           execSync('git restore . && git clean -fd', { cwd: this.sandbox.cwd, timeout: 5000 });
         } catch (e) {}
         return `✅ **Local changes discarded successfully.**

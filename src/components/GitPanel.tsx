@@ -35,10 +35,13 @@ export function GitPanel({ onRunTerminalCommand }: GitPanelProps) {
     setLoading(true);
     try {
       const res = await fetch('/api/git/status');
+      if (!res.ok) return;
+      const contentType = res.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) return;
       const data = await res.json();
       setGitStatus(data);
     } catch (e) {
-      console.error(e);
+      console.error('Error fetching git status:', e);
     } finally {
       setLoading(false);
     }
@@ -47,10 +50,13 @@ export function GitPanel({ onRunTerminalCommand }: GitPanelProps) {
   const fetchDiff = async () => {
     try {
       const res = await fetch('/api/git/diff');
+      if (!res.ok) return;
+      const contentType = res.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) return;
       const data = await res.json();
       setDiffText(data.diff || '');
     } catch (e) {
-      console.error(e);
+      console.error('Error fetching diff:', e);
     }
   };
 

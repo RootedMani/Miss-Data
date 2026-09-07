@@ -25,10 +25,15 @@ export const ManualModal: React.FC<ManualModalProps> = ({ isOpen, onClose, onRun
     try {
       const url = query ? `/api/manual?q=${encodeURIComponent(query)}` : '/api/manual';
       const res = await fetch(url);
+      if (!res.ok) return;
+      const contentType = res.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) return;
       const data = await res.json();
-      setPages(data);
-      if (data.length > 0 && !data.some((p: ManualPage) => p.name === selectedTopic)) {
-        setSelectedTopic(data[0].name);
+      if (Array.isArray(data)) {
+        setPages(data);
+        if (data.length > 0 && !data.some((p: ManualPage) => p.name === selectedTopic)) {
+          setSelectedTopic(data[0].name);
+        }
       }
     } catch (e) {
       console.error(e);

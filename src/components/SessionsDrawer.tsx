@@ -22,6 +22,9 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
   const fetchSessions = async () => {
     try {
       const res = await fetch('/api/sessions');
+      if (!res.ok) return;
+      const contentType = res.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) return;
       const data = await res.json();
       if (data.sessions) {
         setSessions(data.sessions);
