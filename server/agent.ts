@@ -2,9 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
 import { GoogleGenAI } from '@google/genai';
-import { AgentSettings, Message, ToolCall, ToolResult, MemoryFact, SessionInfo, ActivityLogEvent } from './types.js';
+import { AgentSettings, Message, ToolCall, ToolResult, MemoryFact, SessionInfo, ActivityLogEvent, AutocompleteResult } from './types.js';
 import { Sandbox } from './sandbox.js';
-import { MANUAL_PAGES, searchManual } from './manual.js';
+import { MANUAL_PAGES, searchManual, getManualPage, formatManualPage, listManualTopics } from './manual.js';
 
 export class AgentService {
   public settings: AgentSettings;
@@ -118,7 +118,200 @@ export class AgentService {
         perplexity: Boolean(process.env.PERPLEXITY_API_KEY),
         custom: Boolean(process.env.CUSTOM_API_KEY),
       },
+      systemMetrics: {
+        heapUsedMB: Math.round((process.memoryUsage().heapUsed / (1024 * 1024)) * 10) / 10,
+        heapTotalMB: Math.round((process.memoryUsage().heapTotal / (1024 * 1024)) * 10) / 10,
+        rssMB: Math.round((process.memoryUsage().rss / (1024 * 1024)) * 10) / 10,
+        uptimeSec: Math.round(process.uptime()),
+      },
     };
+  }
+
+  public async getAutocomplete(prefix: string): Promise<AutocompleteResult> {
+    const raw = prefix;
+    const trimmed = raw.trim();
+
+    if (!trimmed) {
+      return { prefix, completion: '', fullText: prefix, type: 'command', candidates: [] };
+    }
+
+    const KNOWN_COMMANDS = [
+      'clear',
+      'ls',
+      'ls -la',
+      'pwd',
+      'whoami',
+      'git status',
+      'git diff',
+      'git log',
+      'git branch',
+      'git add .',
+      'git commit -m "',
+      'npm run build',
+      'npm run lint',
+      'npm test',
+      'node -v',
+      '/help',
+      '/status',
+      '/doctor',
+      '/diff',
+      '/changes',
+      '/run ',
+      '/git status',
+      '/git diff',
+      '/git log',
+      '/clear',
+      '/discard',
+      '/update check',
+      '/update apply',
+      '/budget balanced',
+      '/budget economy',
+      '/budget thorough',
+      '/memory',
+      '/lang en',
+      '/lang fa',
+      '/map',
+      '/test',
+      '/man getting-started',
+      '/man update',
+      '/approval risky',
+      '/approval always',
+      '/approval auto',
+      '/sandbox on',
+      '/sandbox off',
+      '/context',
+      '/mode direct',
+      '/mode plan',
+    ];
+
+    // 1. Check known slash commands or shell commands (Tab completion)
+    const lower = trimmed.toLowerCase();
+    const matchingCmds = KNOWN_COMMANDS.filter(cmd => cmd.toLowerCase().startsWith(lower));
+
+    if (matchingCmds.length > 0) {
+      const bestMatch = matchingCmds[0];
+      const completion = bestMatch.slice(trimmed.length);
+      return {
+        prefix,
+        completion,
+        fullText: prefix + completion,
+        type: 'command',
+        candidates: matchingCmds.slice(0, 8),
+      };
+    }
+
+    // 2. Check path / file completion (e.g. "cat src/A" or "ls ser")
+    const pathPrefixMatch = trimmed.match(/^(?:cat|read|edit|run|ls|\$)\s+([a-zA-Z0-9_\-\.\/]+)$/i);
+    if (pathPrefixMatch) {
+      const typedPath = pathPrefixMatch[1];
+      try {
+        const dirToList = path.dirname(typedPath) === '.' ? '.' : path.dirname(typedPath);
+        const searchBase = path.basename(typedPath).toLowerCase();
+        const res = this.sandbox.listDir(dirToList, 1);
+        const matchingFiles = (res.items || [])
+          .map(f => (dirToList === '.' ? f.name : `${dirToList}/${f.name}`))
+          .filter(p => p.toLowerCase().startsWith(typedPath.toLowerCase()));
+
+        if (matchingFiles.length > 0) {
+          const matchedPath = matchingFiles[0];
+          const pathSuffix = matchedPath.slice(typedPath.length);
+          return {
+            prefix,
+            completion: pathSuffix,
+            fullText: prefix + pathSuffix,
+            type: 'path',
+            candidates: matchingFiles.slice(0, 6),
+          };
+        }
+      } catch {
+        // Fall through
+      }
+    }
+
+    // 3. Google AI Studio style prompt autocomplete for natural language
+    // First, try fast speculative LLM completion if GEMINI_API_KEY is configured
+    if (process.env.GEMINI_API_KEY && trimmed.length >= 4 && !trimmed.startsWith('/') && !trimmed.startsWith('$')) {
+      try {
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        const promptInstruction = `You are an inline prompt autocompletion engine for a terminal coding assistant (like Google AI Studio).
+The user is currently typing the prompt: "${trimmed}".
+Provide ONLY a concise, natural inline continuation of 3 to 12 words that finishes their thought.
+Do NOT repeat the prefix. Do NOT use quotes. Do NOT add newlines. Return only the completion.`;
+
+        const completionPromise = ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: promptInstruction,
+          config: {
+            maxOutputTokens: 25,
+            temperature: 0.2,
+            stopSequences: ['\n', '.', '!', '?'],
+          },
+        });
+
+        // Fast 900ms timeout for snappy UI
+        const timeoutPromise = new Promise<null>(resolve => setTimeout(() => resolve(null), 900));
+        const res: any = await Promise.race([completionPromise, timeoutPromise]);
+
+        if (res && res.text) {
+          let continuation = res.text.trim();
+          continuation = continuation.replace(/^["'`]+|["'`]+$/g, '').trim();
+          if (continuation && !continuation.toLowerCase().startsWith(trimmed.toLowerCase())) {
+            // Ensure proper spacing between prefix and continuation
+            const needsSpace = !raw.endsWith(' ') && !continuation.startsWith(' ') && !continuation.startsWith(',');
+            const ghost = (needsSpace ? ' ' : '') + continuation;
+            return {
+              prefix,
+              completion: ghost,
+              fullText: prefix + ghost,
+              type: 'prompt',
+              candidates: [prefix + ghost],
+            };
+          }
+        }
+      } catch {
+        // Fall back to pattern bank
+      }
+    }
+
+    // Smart zero-latency local prompt completion patterns (Google AI Studio archetype)
+    const PROMPT_PATTERNS = [
+      { trigger: /^explain\s*$/i, completion: ' how this codebase works and its key modules' },
+      { trigger: /^explain\s+how\s*$/i, completion: ' the terminal sandbox executes commands safely' },
+      { trigger: /^how\s*$/i, completion: ' do I run shell commands inside the sandbox?' },
+      { trigger: /^how\s+do\s+i\s*$/i, completion: ' execute tests or check git status?' },
+      { trigger: /^write\s*$/i, completion: ' a utility function to handle errors cleanly' },
+      { trigger: /^write\s+a\s*$/i, completion: ' unit test for the terminal command processor' },
+      { trigger: /^fix\s*$/i, completion: ' any syntax or typing errors in the project' },
+      { trigger: /^fix\s+the\s*$/i, completion: ' issue where commands need validation' },
+      { trigger: /^refactor\s*$/i, completion: ' the terminal component for better performance' },
+      { trigger: /^add\s*$/i, completion: ' a new slash command to inspect active memory' },
+      { trigger: /^add\s+a\s*$/i, completion: ' shortcut to toggle response language' },
+      { trigger: /^check\s*$/i, completion: ' git status and list uncommitted modifications' },
+      { trigger: /^check\s+if\s*$/i, completion: ' all dependencies and types build cleanly' },
+      { trigger: /^test\s*$/i, completion: ' the application build and run the test suite' },
+      { trigger: /^show\s*$/i, completion: ' me the manual for getting started with Miss Data' },
+      { trigger: /^what\s*$/i, completion: ' tools and commands are currently supported?' },
+      { trigger: /^create\s*$/i, completion: ' a test script to verify command execution' },
+      { trigger: /^find\s*$/i, completion: ' where the terminal keyboard events are handled' },
+      { trigger: /^search\s*$/i, completion: ' the codebase for git status handlers' },
+      { trigger: /^list\s*$/i, completion: ' all files in the current workspace directory' },
+      { trigger: /^run\s*$/i, completion: ' npm run build to check for errors' },
+      { trigger: /^can\s+you\s*$/i, completion: ' inspect the repository and explain its architecture?' },
+    ];
+
+    for (const p of PROMPT_PATTERNS) {
+      if (p.trigger.test(trimmed)) {
+        return {
+          prefix,
+          completion: p.completion,
+          fullText: prefix + p.completion,
+          type: 'prompt',
+          candidates: [prefix + p.completion],
+        };
+      }
+    }
+
+    return { prefix, completion: '', fullText: prefix, type: 'command', candidates: [] };
   }
 
   public isToolRisky(toolName: string): boolean {
@@ -294,13 +487,21 @@ export class AgentService {
 
     switch (cmd) {
       case '/help': {
-        if (arg && MANUAL_PAGES[arg.toLowerCase()]) {
-          const p = MANUAL_PAGES[arg.toLowerCase()];
-          return `### Manual Page: ${p.name}\n**Synopsis:** \`${p.synopsis}\`\n\n${p.description}\n\n**Examples:**\n${p.examples.map(e => `- \`${e}\``).join('\n')}\n${p.safety ? `\n⚠️ **Safety:** ${p.safety}` : ''}`;
+        if (arg) {
+          const page = getManualPage(arg);
+          if (page) {
+            return formatManualPage(page);
+          }
+          const matches = searchManual(arg);
+          if (matches.length > 0) {
+            return `Topic or command '${arg}' not found directly.\n\nDid you mean:\n${matches.slice(0, 4).map(m => `- \`/man ${m.name}\` - ${m.synopsis}`).join('\n')}\n\nType \`/man\` to browse all documentation.`;
+          }
+          return `Command or topic '${arg}' not found. Type \`/help\` for commands or \`/man\` for complete manuals.`;
         }
-        return `## Miss Data Commands Index
+        return `## 🛠️ Miss Data Commands Index
+- \`/run <cmd>\` or \`$ <cmd>\` - Execute shell command in sandbox (e.g. \`/run ls -la\`)
 - \`/status\` - Show active provider, model, budget, safeguards, recovery
-- \`/doctor\` - Run no-model-cost diagnostics on workspace & git
+- \`/doctor\` - Run zero-model-cost diagnostics on workspace & git
 - \`/changes\` / \`/diff [rev]\` - Inspect file changes and git diff
 - \`/budget <economy|balanced|thorough|tokens>\` - Set output token cap
 - \`/clear\` - Clear conversation turns in current session
@@ -310,23 +511,50 @@ export class AgentService {
 - \`/cwd [path]\` - Show or change working directory
 - \`/provider <name>\` - Switch LLM backend
 - \`/model <name>\` - Switch model for active provider
-- \`/keys [show|add|replace|edit|remove] <provider>\` - Manage key pools
-- \`/fallback [set <p,...>|off]\` - Manage fallback provider order
 - \`/approval <always|risky|auto>\` - Change tool confirmation behavior
 - \`/sandbox <on|off>\` - Confine file tools to working directory
+- \`/sound <on|off|toggle>\` - Toggle retro terminal sound effects
+- \`/metrics <on|off>\` - Toggle bottom memory & latency status line
 - \`/lang <en|fa>\` - Response language (English or Persian)
 - \`/map\` - Project onboarding overview and test discovery
 - \`/test [run N]\` - List or run discovered test commands
 - \`/context\` - Approximate character and token meter
 - \`/mode <plan|direct>\` - Require an implementation plan before tools act
-- \`/checkpoint [name]\` / \`/checkpoints\` / \`/restore <rev>\` - Checkpoints & rollback
-- \`/sessions\` - List saved conversation sessions
-- \`/profile <explore|build|review>\` - Switch work profile
-- \`/review [path]\` - Read-only model code inspection
-- \`/privacy\` - View or clear session logs
+- \`/checkpoint [name]\` - Create workspace backup snapshot
+- \`/checkpoints\` - List saved workspace snapshots
+- \`/restore <name>\` - Restore workspace to saved snapshot
+- \`/git <args>\` - Execute git commands directly in workspace
 - \`/update [check|apply]\` - Check or apply updates from official remote
 - \`/discard\` - Discard uncommitted local working tree changes
-- \`/man [topic]\` - Open built-in manual pages (try \`/man getting-started\` or \`/man update\`)`;
+- \`/keys [show|add|remove]\` - API key management and pool rotation
+- \`/resilience\` - Automatic error recovery & fallback configuration
+- \`/sessions\` - List or resume saved conversation sessions
+- \`/privacy [clear]\` - Privacy inspection and local data scrubber
+- \`/logs [count]\` - View redacted activity audit logs
+- \`/man [topic]\` - Open built-in manual pages (try \`/man overview\` or \`/man status\`)
+
+💡 *Type \`/man <command>\` or \`/help <command>\` for complete Unix-style documentation on any command!*`;
+      }
+
+      case '/run':
+      case '/exec':
+      case '/sh':
+      case '/bash': {
+        if (!arg) return 'Usage: `/run <command>` (e.g. `/run ls -la` or `/run git status`)';
+        const res = this.sandbox.runCommand(arg);
+        if (res.exitCode !== 0) {
+          return `[Exit code ${res.exitCode}]\n${res.stderr || res.stdout || 'Error executing command'}`;
+        }
+        return res.stdout || `(Command exited with code 0 and no output)`;
+      }
+
+      case '/git': {
+        const gitCmd = `git ${arg}`;
+        const res = this.sandbox.runCommand(gitCmd);
+        if (res.exitCode !== 0) {
+          return `[Exit code ${res.exitCode}]\n${res.stderr || res.stdout}`;
+        }
+        return res.stdout || `(Git command executed successfully)`;
       }
 
       case '/status': {
@@ -484,6 +712,23 @@ export class AgentService {
         return 'Usage: `/sandbox <on|off>`';
       }
 
+      case '/sound': {
+        return `Terminal sound effects can be toggled using the speaker button in the title bar, or via \`/sound on\` / \`/sound off\`.`;
+      }
+
+      case '/metrics':
+      case '/statusline': {
+        const mem = process.memoryUsage();
+        const heapUsed = (mem.heapUsed / (1024 * 1024)).toFixed(1);
+        const heapTotal = (mem.heapTotal / (1024 * 1024)).toFixed(1);
+        const rss = (mem.rss / (1024 * 1024)).toFixed(1);
+        return `### 📊 System Statusline & Metrics
+- **Heap Memory:** \`${heapUsed} MB\` / \`${heapTotal} MB\`
+- **Resident Set Size (RSS):** \`${rss} MB\`
+- **Process Uptime:** \`${Math.round(process.uptime())}s\`
+- **Status Line Control:** Click the \`hide\` button or use \`/statusline on\` / \`/statusline off\` (or click the **Sys** button in the header bar).`;
+      }
+
       case '/lang': {
         if (arg === 'fa') {
           this.settings.responseLanguage = 'fa';
@@ -561,26 +806,28 @@ Run with: \`/test run 1\``;
 
       case '/man': {
         if (!arg) {
-          return `### 📖 Miss Data Manual Topics
-Use \`/man <topic>\` to read:
-${Object.keys(MANUAL_PAGES).map(t => `- \`/man ${t}\` - ${MANUAL_PAGES[t].synopsis}`).join('\n')}
-Or search with: \`/man search <words>\``;
+          return listManualTopics();
         }
         if (arg.startsWith('search')) {
-          const q = arg.replace(/^search\s*/, '');
+          const q = arg.replace(/^search\s*/, '').trim();
+          if (!q) return 'Usage: `/man search <words>` (e.g. `/man search recovery` or `/man search git`)';
           const res = searchManual(q);
-          return `### Search Results for "${q}":\n${res.map(p => `- **${p.name}**: ${p.synopsis}`).join('\n')}`;
+          if (res.length === 0) {
+            return `No manual pages matched query "${q}". Type \`/man\` to view all topics.`;
+          }
+          return `### 🔍 Manual Search Results for "${q}":\n${res.map(p => `- **\`/man ${p.name}\`**: ${p.synopsis}`).join('\n')}\n\n💡 *Type \`/man <name>\` to read any page above.*`;
         }
-        const page = MANUAL_PAGES[arg.toLowerCase()];
-        if (!page) return `Manual page '${arg}' not found. Type \`/man\` for topics.`;
-        return `### Manual: ${page.name}
-**Synopsis:** \`${page.synopsis}\`
 
-${page.description}
+        const page = getManualPage(arg);
+        if (!page) {
+          const suggestions = searchManual(arg);
+          if (suggestions.length > 0) {
+            return `Manual page '${arg}' not found.\n\nDid you mean:\n${suggestions.slice(0, 5).map(s => `- \`/man ${s.name}\` - ${s.synopsis}`).join('\n')}\n\nType \`/man\` for the master index of all manuals.`;
+          }
+          return `Manual page '${arg}' not found. Type \`/man\` for the master index of all documentation.`;
+        }
 
-**Examples:**
-${page.examples.map(e => `- \`${e}\``).join('\n')}
-${page.safety ? `\n⚠️ **Safety:** ${page.safety}` : ''}`;
+        return formatManualPage(page);
       }
 
       case '/logs': {
@@ -673,8 +920,80 @@ Once the tree is clean, running \`/update apply\` will fast-forward without erro
   public async processUserMessage(userPrompt: string): Promise<Message> {
     this.touchedFiles.clear();
 
+    const trimmed = userPrompt.trim();
+
+    // Direct clear command
+    if (trimmed === 'clear' || trimmed === '/clear') {
+      this.messages = [];
+      this.touchedFiles.clear();
+      const assistantMsg: Message = {
+        id: `msg-${Date.now()}`,
+        role: 'assistant',
+        content: 'Terminal cleared.',
+        timestamp: Date.now(),
+        status: 'done',
+      };
+      this.messages.push(assistantMsg);
+      return assistantMsg;
+    }
+
+    // Direct shell execution prefix ($ or !)
+    if (trimmed.startsWith('$') || trimmed.startsWith('!')) {
+      const shCmd = trimmed.replace(/^[\$!]\s*/, '');
+      const userMsg: Message = {
+        id: `user-${Date.now()}`,
+        role: 'user',
+        content: userPrompt,
+        timestamp: Date.now(),
+      };
+      this.messages.push(userMsg);
+
+      const res = this.sandbox.runCommand(shCmd);
+      const outText = res.exitCode === 0
+        ? (res.stdout || '(Command completed with exit code 0)')
+        : `[Exit code ${res.exitCode}]\n${res.stderr || res.stdout || 'Execution failed'}`;
+
+      const assistantMsg: Message = {
+        id: `msg-${Date.now()}`,
+        role: 'assistant',
+        content: `\`\`\`bash\n$ ${shCmd}\n${outText}\n\`\`\``,
+        timestamp: Date.now(),
+        status: res.exitCode === 0 ? 'done' : 'error',
+      };
+      this.messages.push(assistantMsg);
+      return assistantMsg;
+    }
+
+    // Common direct terminal commands (ls, pwd, git status, etc.)
+    const commonShellWords = ['ls', 'pwd', 'whoami', 'uname', 'git', 'df', 'top', 'node -v', 'npm -v', 'python3 --version'];
+    const isDirectShell = commonShellWords.some(w => trimmed === w || trimmed.startsWith(`${w} `));
+    if (isDirectShell) {
+      const userMsg: Message = {
+        id: `user-${Date.now()}`,
+        role: 'user',
+        content: userPrompt,
+        timestamp: Date.now(),
+      };
+      this.messages.push(userMsg);
+
+      const res = this.sandbox.runCommand(trimmed);
+      const outText = res.exitCode === 0
+        ? (res.stdout || '(Command completed with exit code 0)')
+        : `[Exit code ${res.exitCode}]\n${res.stderr || res.stdout || 'Execution failed'}`;
+
+      const assistantMsg: Message = {
+        id: `msg-${Date.now()}`,
+        role: 'assistant',
+        content: `\`\`\`bash\n$ ${trimmed}\n${outText}\n\`\`\``,
+        timestamp: Date.now(),
+        status: res.exitCode === 0 ? 'done' : 'error',
+      };
+      this.messages.push(assistantMsg);
+      return assistantMsg;
+    }
+
     // Check if it is a slash command
-    if (userPrompt.trim().startsWith('/')) {
+    if (trimmed.startsWith('/')) {
       const responseText = await this.handleSlashCommand(userPrompt);
       const assistantMsg: Message = {
         id: `msg-${Date.now()}`,

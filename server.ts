@@ -3,7 +3,7 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { AgentService } from './server/agent.js';
-import { searchManual, MANUAL_PAGES } from './server/manual.js';
+import { searchManual, MANUAL_PAGES, getManualPage } from './server/manual.js';
 import { getGitStatus, getGitDiff, performGitAction } from './server/git.js';
 
 dotenv.config();
@@ -22,6 +22,19 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/status', (req, res) => {
   res.json(agent.getStatus());
+});
+
+app.post('/api/autocomplete', async (req, res) => {
+  try {
+    const { prefix } = req.body;
+    if (typeof prefix !== 'string') {
+      return res.status(400).json({ error: 'Prefix string is required' });
+    }
+    const result = await agent.getAutocomplete(prefix);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/chat', async (req, res) => {
@@ -94,9 +107,9 @@ app.get('/api/manual', (req, res) => {
 
 app.get('/api/manual/:topic', (req, res) => {
   try {
-    const topic = req.params.topic.toLowerCase();
-    const page = MANUAL_PAGES[topic];
-    if (!page) return res.status(404).json({ error: 'Topic not found' });
+    const topic = req.params.topic;
+    const page = getManualPage(topic);
+    if (!page) return res.status(404).json({ error: `Topic '${topic}' not found in manuals.` });
     res.json(page);
   } catch (err: any) {
     res.status(500).json({ error: err.message });

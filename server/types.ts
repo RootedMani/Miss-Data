@@ -63,3 +63,11 @@ export interface ActivityLogEvent {
   event: string;
   data: Record<string, any>;
 }
+
+export interface AutocompleteResult {
+  prefix: string;
+  completion: string;
+  fullText: string;
+  type: 'command' | 'prompt' | 'path';
+  candidates?: string[];
+}
