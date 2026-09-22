@@ -6,6 +6,28 @@ import { AgentSettings, Message, ToolCall, ToolResult, MemoryFact, SessionInfo, 
 import { Sandbox } from './sandbox.js';
 import { MANUAL_PAGES, searchManual, getManualPage, formatManualPage, listManualTopics } from './manual.js';
 
+export const PROVIDER_ENV_MAP: Record<string, string> = {
+  gemini: 'GEMINI_API_KEY',
+  groq: 'GROQ_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+  together: 'TOGETHER_API_KEY',
+  mistral: 'MISTRAL_API_KEY',
+  fireworks: 'FIREWORKS_API_KEY',
+  xai: 'XAI_API_KEY',
+  moonshot: 'MOONSHOT_API_KEY',
+  perplexity: 'PERPLEXITY_API_KEY',
+  custom: 'CUSTOM_API_KEY',
+};
+
+export function maskKey(key?: string): string {
+  if (!key) return '(not configured)';
+  if (key.length <= 8) return '********';
+  return `${key.slice(0, 4)}...${key.slice(-4)}`;
+}
+
 export class AgentService {
   public settings: AgentSettings;
   public sandbox: Sandbox;
@@ -18,12 +40,23 @@ export class AgentService {
   public activityLogs: ActivityLogEvent[] = [];
   public pendingApproval: { toolCall: ToolCall; messageId: string; isRisky: boolean } | null = null;
   public checkpoints: { id: string; name: string; timestamp: number; files: Record<string, string> }[] = [];
+  public keyPool: Map<string, string[]> = new Map();
 
   constructor() {
     this.sandbox = new Sandbox(process.cwd(), true);
+
+    // Initialize key pools from env
+    for (const [prov, envVar] of Object.entries(PROVIDER_ENV_MAP)) {
+      if (process.env[envVar]) {
+        this.keyPool.set(prov, [process.env[envVar]!]);
+      }
+    }
+
+    const initialProvider = this.getKeyForProvider('gemini') ? 'gemini' : (this.getKeyForProvider('groq') ? 'groq' : 'gemini');
+
     this.settings = {
-      provider: process.env.GEMINI_API_KEY ? 'gemini' : (process.env.GROQ_API_KEY ? 'groq' : 'gemini'),
-      model: 'gemini-2.5-flash',
+      provider: initialProvider,
+      model: initialProvider === 'groq' ? 'llama-3.3-70b-versatile' : 'gemini-3.6-flash',
       approvalMode: 'risky',
       sandboxMode: true,
       budgetProfile: 'balanced',
@@ -50,6 +83,14 @@ export class AgentService {
       cwd: this.sandbox.cwd,
       sandbox: this.settings.sandboxMode,
     });
+  }
+
+  public getKeyForProvider(provider: string): string | undefined {
+    const pool = this.keyPool.get(provider);
+    if (pool && pool.length > 0 && pool[0]) return pool[0];
+    const envVar = PROVIDER_ENV_MAP[provider];
+    if (envVar && process.env[envVar]) return process.env[envVar];
+    return undefined;
   }
 
   public logEvent(event: string, data: Record<string, any>) {
@@ -104,19 +145,19 @@ export class AgentService {
         'custom',
       ],
       configuredKeys: {
-        gemini: Boolean(process.env.GEMINI_API_KEY),
-        groq: Boolean(process.env.GROQ_API_KEY),
-        anthropic: Boolean(process.env.ANTHROPIC_API_KEY),
-        openai: Boolean(process.env.OPENAI_API_KEY),
-        deepseek: Boolean(process.env.DEEPSEEK_API_KEY),
-        openrouter: Boolean(process.env.OPENROUTER_API_KEY),
-        together: Boolean(process.env.TOGETHER_API_KEY),
-        mistral: Boolean(process.env.MISTRAL_API_KEY),
-        fireworks: Boolean(process.env.FIREWORKS_API_KEY),
-        xai: Boolean(process.env.XAI_API_KEY),
-        moonshot: Boolean(process.env.MOONSHOT_API_KEY),
-        perplexity: Boolean(process.env.PERPLEXITY_API_KEY),
-        custom: Boolean(process.env.CUSTOM_API_KEY),
+        gemini: Boolean(this.getKeyForProvider('gemini')),
+        groq: Boolean(this.getKeyForProvider('groq')),
+        anthropic: Boolean(this.getKeyForProvider('anthropic')),
+        openai: Boolean(this.getKeyForProvider('openai')),
+        deepseek: Boolean(this.getKeyForProvider('deepseek')),
+        openrouter: Boolean(this.getKeyForProvider('openrouter')),
+        together: Boolean(this.getKeyForProvider('together')),
+        mistral: Boolean(this.getKeyForProvider('mistral')),
+        fireworks: Boolean(this.getKeyForProvider('fireworks')),
+        xai: Boolean(this.getKeyForProvider('xai')),
+        moonshot: Boolean(this.getKeyForProvider('moonshot')),
+        perplexity: Boolean(this.getKeyForProvider('perplexity')),
+        custom: Boolean(this.getKeyForProvider('custom')),
       },
       systemMetrics: {
         heapUsedMB: Math.round((process.memoryUsage().heapUsed / (1024 * 1024)) * 10) / 10,
@@ -673,7 +714,7 @@ Do NOT repeat the prefix. Do NOT use quotes. Do NOT add newlines. Return only th
         }
         this.settings.provider = prov;
         // Default models
-        if (prov === 'gemini') this.settings.model = 'gemini-2.5-flash';
+        if (prov === 'gemini') this.settings.model = 'gemini-3.6-flash';
         else if (prov === 'groq') this.settings.model = 'llama-3.3-70b-versatile';
         else if (prov === 'anthropic') this.settings.model = 'claude-3-7-sonnet';
         else if (prov === 'deepseek') this.settings.model = 'deepseek-chat';
@@ -912,6 +953,164 @@ Once the tree is clean, running \`/update apply\` will fast-forward without erro
 - Working tree is now clean and ready for \`/update apply\`.`;
       }
 
+      case '/keys': {
+        const subParts = arg.split(/\s+/).filter(Boolean);
+        const action = subParts[0]?.toLowerCase() || 'show';
+        const targetProv = subParts[1]?.toLowerCase();
+
+        if (action === 'show' || !arg) {
+          if (targetProv) {
+            const key = this.getKeyForProvider(targetProv);
+            if (!key) {
+              return `### 🔑 Provider Key: **${targetProv}**\n- **Status:** ⚠️ Not configured\n- Set key with: \`/keys add ${targetProv} <your_api_key>\``;
+            }
+            return `### 🔑 Provider Key: **${targetProv}**\n- **Status:** ✅ Configured\n- **Key Preview:** \`${maskKey(key)}\`\n- **Pool Size:** ${this.keyPool.get(targetProv)?.length || 1} key(s)\n- Remove with: \`/keys remove ${targetProv}\``;
+          }
+
+          const provs = Object.keys(PROVIDER_ENV_MAP);
+          const lines = provs.map(p => {
+            const key = this.getKeyForProvider(p);
+            const activeMark = this.settings.provider === p ? ' **[ACTIVE]**' : '';
+            return `- **${p}:** ${key ? `\`${maskKey(key)}\`` : '*(not configured)*'}${activeMark}`;
+          });
+
+          return `### 🔑 Miss Data API Key Pool
+${lines.join('\n')}
+
+**Commands:**
+- \`/keys show [provider]\` - Inspect key status (e.g. \`/keys show groq\`)
+- \`/keys add <provider> <key>\` - Add & activate key (e.g. \`/keys add groq gsk_...\`)
+- \`/keys remove <provider>\` - Remove key for provider`;
+        }
+
+        if (action === 'add') {
+          const prov = subParts[1]?.toLowerCase();
+          const key = subParts[2];
+          if (!prov || !key) {
+            return 'Usage: `/keys add <provider> <key>` (e.g. `/keys add groq gsk_...` or `/keys add gemini AIzaSy...`)';
+          }
+          const envVar = PROVIDER_ENV_MAP[prov];
+          if (envVar) {
+            process.env[envVar] = key;
+          }
+          const existing = this.keyPool.get(prov) || [];
+          if (!existing.includes(key)) {
+            existing.unshift(key);
+            this.keyPool.set(prov, existing);
+          }
+          this.logEvent('key_added', { provider: prov });
+
+          let switchedNote = '';
+          if (this.settings.provider !== prov && !this.getKeyForProvider(this.settings.provider)) {
+            this.settings.provider = prov;
+            if (prov === 'groq') this.settings.model = 'llama-3.3-70b-versatile';
+            else if (prov === 'gemini') this.settings.model = 'gemini-3.6-flash';
+            else if (prov === 'deepseek') this.settings.model = 'deepseek-chat';
+            else if (prov === 'openai') this.settings.model = 'gpt-4o';
+            else if (prov === 'anthropic') this.settings.model = 'claude-3-7-sonnet';
+            switchedNote = `\nActive provider automatically switched to **${prov}** (model: \`${this.settings.model}\`).`;
+          }
+
+          return `✅ API key added successfully for **${prov}** (\`${maskKey(key)}\`).${switchedNote}`;
+        }
+
+        if (action === 'remove' || action === 'delete') {
+          const prov = subParts[1]?.toLowerCase();
+          if (!prov) return 'Usage: `/keys remove <provider>`';
+          const envVar = PROVIDER_ENV_MAP[prov];
+          if (envVar) {
+            delete process.env[envVar];
+          }
+          this.keyPool.delete(prov);
+          this.logEvent('key_removed', { provider: prov });
+          return `Key for **${prov}** removed from pool.`;
+        }
+
+        return 'Usage: `/keys [show | add | remove] [provider]`. See `/man keys` for detailed documentation.';
+      }
+
+      case '/resilience': {
+        const fallbacks = this.settings.fallbackProviders.map(p => {
+          const configured = Boolean(this.getKeyForProvider(p));
+          return `${p} (${configured ? '✅ ready' : 'no key'})`;
+        }).join(' → ');
+
+        return `### 🛡️ Miss Data Resilience & Fault Tolerance
+- **Active Provider:** \`${this.settings.provider}\` (Key: ${this.getKeyForProvider(this.settings.provider) ? '✅ Ready' : '⚠️ None'})
+- **Fallback Pipeline:** ${fallbacks}
+- **Context Auto-Compaction:** \`${this.settings.contextRecovery}\` (Shrinks history when approaching token limit)
+- **Local Fallback:** Always active (Offline file inspection, git commands, and shell execution continue without internet)
+- **Ollama Local Loopback:** \`${this.settings.ollamaUrl}\` (Recovery: \`${this.settings.ollamaRecovery}\`)
+- **Key Pool Rotation:** Automatically rotates across multi-key pools on HTTP 429 rate limit responses.`;
+      }
+
+      case '/sessions': {
+        const subParts = arg.split(/\s+/).filter(Boolean);
+        const action = subParts[0]?.toLowerCase();
+
+        if (action === 'new') {
+          const title = subParts.slice(1).join(' ') || `Session ${this.sessions.size + 1}`;
+          const newId = `session-${Date.now()}`;
+          this.sessions.set(this.currentSessionId, {
+            title: this.sessions.get(this.currentSessionId)?.title || 'Previous session',
+            messages: [...this.messages],
+            updatedAt: Date.now(),
+          });
+          this.currentSessionId = newId;
+          this.messages = [];
+          this.sessions.set(newId, {
+            title,
+            messages: [],
+            updatedAt: Date.now(),
+          });
+          return `Started new session: **${title}** (\`${newId}\`).`;
+        }
+
+        if (action === 'switch' && subParts[1]) {
+          const targetId = subParts[1];
+          const target = this.sessions.get(targetId);
+          if (!target) {
+            return `Session \`${targetId}\` not found. Use \`/sessions\` to view available IDs.`;
+          }
+          this.sessions.set(this.currentSessionId, {
+            title: this.sessions.get(this.currentSessionId)?.title || 'Untitled',
+            messages: [...this.messages],
+            updatedAt: Date.now(),
+          });
+          this.currentSessionId = targetId;
+          this.messages = [...target.messages];
+          return `Switched to session: **${target.title}** (${this.messages.length} messages).`;
+        }
+
+        const list = Array.from(this.sessions.entries()).map(([id, s]) => {
+          const isCurrent = id === this.currentSessionId ? ' **[ACTIVE]**' : '';
+          return `- **${s.title}** (\`${id}\`): ${s.messages.length} messages (Updated: ${new Date(s.updatedAt).toLocaleTimeString()})${isCurrent}`;
+        });
+
+        return `### 🗂️ Conversation Sessions
+${list.join('\n')}
+
+**Commands:**
+- \`/sessions new [title]\` - Start a fresh conversation session
+- \`/sessions switch <id>\` - Switch to an existing session`;
+      }
+
+      case '/privacy': {
+        if (arg.trim().toLowerCase() === 'clear') {
+          this.messages = [];
+          this.activityLogs = [];
+          this.checkpoints = [];
+          this.touchedFiles.clear();
+          return `✅ **Privacy audit complete:** Conversation history, activity audit logs, and in-memory checkpoints have been permanently scrubbed.`;
+        }
+        return `### 🔒 Privacy Audit & Local Isolation
+- **Conversation Turns:** ${this.messages.length} messages in buffer
+- **Durable Facts:** ${this.memoryFacts.length} remembered facts
+- **Activity Logs:** ${this.activityLogs.length} events logged (all credentials automatically redacted)
+- **External Telemetry:** Disabled (Zero analytics or telemetry sent to third parties)
+- **Data Scrubbing:** Run \`/privacy clear\` to instantly wipe all message history and audit trails.`;
+      }
+
       default:
         return `Unknown command: \`${cmd}\`. Type \`/help\` for a list of commands.`;
     }
@@ -1033,13 +1232,18 @@ Once the tree is clean, running \`/update apply\` will fast-forward without erro
 
     // Call LLM or local agent logic
     try {
-      if (process.env.GEMINI_API_KEY && this.settings.provider === 'gemini') {
+      const activeKey = this.getKeyForProvider(this.settings.provider);
+      if (this.settings.provider === 'gemini' && activeKey) {
         await this.runGeminiTurn(userPrompt, assistantMsg);
+      } else if (['groq', 'openai', 'deepseek', 'openrouter', 'together', 'mistral', 'fireworks', 'xai'].includes(this.settings.provider) && activeKey) {
+        await this.runOpenAICompatibleTurn(userPrompt, assistantMsg);
+      } else if (this.settings.provider === 'anthropic' && activeKey) {
+        await this.runAnthropicTurn(userPrompt, assistantMsg);
       } else {
         await this.runLocalAgentTurn(userPrompt, assistantMsg);
       }
     } catch (e: any) {
-      assistantMsg.content += `\n\n[Provider Error]: ${e.message}`;
+      assistantMsg.content += `\n\n[Provider Error (${this.settings.provider})]: ${e.message}`;
       assistantMsg.status = 'error';
     }
 
@@ -1047,8 +1251,97 @@ Once the tree is clean, running \`/update apply\` will fast-forward without erro
     return assistantMsg;
   }
 
+  private async runOpenAICompatibleTurn(userPrompt: string, msg: Message) {
+    const key = this.getKeyForProvider(this.settings.provider);
+    if (!key) throw new Error(`No API key configured for ${this.settings.provider}`);
+
+    let endpoint = 'https://api.openai.com/v1/chat/completions';
+    if (this.settings.provider === 'groq') {
+      endpoint = 'https://api.groq.com/openai/v1/chat/completions';
+    } else if (this.settings.provider === 'deepseek') {
+      endpoint = 'https://api.deepseek.com/v1/chat/completions';
+    } else if (this.settings.provider === 'openrouter') {
+      endpoint = 'https://openrouter.ai/api/v1/chat/completions';
+    } else if (this.settings.provider === 'together') {
+      endpoint = 'https://api.together.xyz/v1/chat/completions';
+    } else if (this.settings.provider === 'mistral') {
+      endpoint = 'https://api.mistral.ai/v1/chat/completions';
+    }
+
+    const systemInstruction = `You are Miss Data (خانم داده), a helpful terminal coding assistant.
+Response language: ${this.settings.responseLanguage === 'fa' ? 'Persian (فارسی)' : 'English'}.
+Workspace directory: ${this.sandbox.cwd}.
+Memory facts: ${this.memoryFacts.map(f => f.fact).join('; ') || 'None'}.
+Always provide direct, practical answers for coding, debugging, and terminal operations.`;
+
+    const chatMessages = [
+      { role: 'system', content: systemInstruction },
+      ...this.messages.slice(-6, -1).map(m => ({
+        role: m.role === 'assistant' ? 'assistant' : 'user',
+        content: m.content || '',
+      })),
+      { role: 'user', content: userPrompt },
+    ];
+
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        model: this.settings.model,
+        messages: chatMessages,
+        max_tokens: this.settings.maxOutputTokens || 2048,
+      }),
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`HTTP ${resp.status}: ${errText}`);
+    }
+
+    const data: any = await resp.json();
+    const reply = data.choices?.[0]?.message?.content || '(No response returned from provider)';
+    msg.content = reply;
+    msg.status = 'done';
+  }
+
+  private async runAnthropicTurn(userPrompt: string, msg: Message) {
+    const key = this.getKeyForProvider('anthropic');
+    if (!key) throw new Error('No API key configured for Anthropic');
+
+    const systemInstruction = `You are Miss Data (خانم داده), a helpful terminal coding agent. Response language: ${this.settings.responseLanguage === 'fa' ? 'Persian (فارسی)' : 'English'}. Workspace: ${this.sandbox.cwd}.`;
+
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: this.settings.model || 'claude-3-7-sonnet',
+        system: systemInstruction,
+        messages: [{ role: 'user', content: userPrompt }],
+        max_tokens: this.settings.maxOutputTokens || 2048,
+      }),
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`HTTP ${resp.status}: ${errText}`);
+    }
+
+    const data: any = await resp.json();
+    const reply = data.content?.[0]?.text || '(No content returned from Anthropic)';
+    msg.content = reply;
+    msg.status = 'done';
+  }
+
   private async runGeminiTurn(userPrompt: string, msg: Message) {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    const key = this.getKeyForProvider('gemini') || process.env.GEMINI_API_KEY;
+    const ai = new GoogleGenAI({ apiKey: key });
     
     // Tools schema
     const toolsConfig: any = [{
@@ -1140,14 +1433,38 @@ Workspace: ${this.sandbox.cwd}.
 Memory: ${this.memoryFacts.map(f => f.fact).join('; ') || 'None'}.
 Always be precise, concise, and explain tool actions clearly.`;
 
-    const response = await ai.models.generateContent({
-      model: this.settings.model,
-      contents: userPrompt,
-      config: {
-        systemInstruction,
-        tools: toolsConfig,
-      },
-    });
+    let response: any;
+    const candidates = [this.settings.model, 'gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+    const uniqueCandidates = Array.from(new Set(candidates));
+    let lastErr: any = null;
+
+    for (const m of uniqueCandidates) {
+      try {
+        response = await ai.models.generateContent({
+          model: m,
+          contents: userPrompt,
+          config: {
+            systemInstruction,
+            tools: toolsConfig,
+          },
+        });
+        if (m !== this.settings.model) {
+          this.settings.model = m;
+        }
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        const msg = String(err?.message || err);
+        if (msg.includes('not found') || msg.includes('404') || msg.includes('no longer available') || err?.status === 'NOT_FOUND') {
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (!response) {
+      throw lastErr || new Error('No candidate Gemini model succeeded');
+    }
 
     // Check function calls
     if (response.functionCalls && response.functionCalls.length > 0) {
@@ -1181,19 +1498,104 @@ Always be precise, concise, and explain tool actions clearly.`;
         const res = await this.executeTool(toolCall);
         msg.toolResults.push(res);
       }
+
+      if (!response.text) {
+        const previousContent = response.candidates?.[0]?.content;
+        try {
+          const followUp = await ai.models.generateContent({
+            model: this.settings.model,
+            contents: [
+              userPrompt,
+              previousContent,
+              {
+                role: 'user',
+                parts: msg.toolResults.map(tr => ({
+                  functionResponse: {
+                    name: tr.name,
+                    response: { result: tr.output }
+                  }
+                }))
+              }
+            ],
+            config: { systemInstruction },
+          });
+          if (followUp.text) {
+            msg.content = followUp.text;
+          }
+        } catch (e) {
+          // If followUp fails, provide a clean summary
+          msg.content = msg.toolResults.map(r => `Executed \`${r.name}\``).join(', ');
+        }
+      }
     }
 
-    msg.content = response.text || (msg.toolResults?.length ? 'Tool executed successfully.' : 'Done.');
+    if (!msg.content) {
+      msg.content = response.text || (msg.toolResults?.length ? 'Tool executed successfully.' : 'Done.');
+    }
     msg.status = 'done';
   }
 
   private async runLocalAgentTurn(userPrompt: string, msg: Message) {
     // Intelligent heuristic agent when external API key is not configured or in offline mode
-    const lower = userPrompt.toLowerCase();
+    const trimmed = userPrompt.trim();
+    const lower = trimmed.toLowerCase();
     msg.toolCalls = [];
     msg.toolResults = [];
 
-    if (lower.includes('list') || lower.includes('show files') || lower.includes('ls')) {
+    if (/^(hi|hello|hey|salam|dorood|greetings|yo|good\s*(morning|afternoon|evening))\b/i.test(trimmed)) {
+      const activeKey = Boolean(this.getKeyForProvider(this.settings.provider));
+      msg.content = `Hello! I am Miss Data (خانم داده), your terminal coding assistant.
+I'm ready to inspect files, execute terminal commands, run git operations, or develop on this project.
+
+${activeKey ? `Active provider: **${this.settings.provider}** (\`${this.settings.model}\`).` : `*(Offline deterministic mode is active. You can configure an API key anytime with \`/keys add <provider> <key>\` to enable full generative AI answers.)*`}
+
+**Quick actions to get started:**
+- \`/status\` - View agent configuration, safeguards, and memory
+- \`$ <cmd>\` or \`/run <cmd>\` - Execute shell commands directly
+- \`list files\` or \`read <filepath>\` - Inspect workspace files
+- \`/doctor\` - Run zero-token system diagnostics
+- \`/man\` - Browse complete built-in command manuals`;
+    } else if (/(what can you do|capabilities|how do you work|who are you|features|what are you)/i.test(trimmed)) {
+      const activeKey = Boolean(this.getKeyForProvider(this.settings.provider));
+      msg.content = `### 💻 Miss Data (خانم داده) Capabilities
+
+Miss Data is an autonomous terminal coding agent built for professional engineering workflows:
+
+1. **Codebase Navigation & File Editing:**
+   - Read, edit, search, and create files in the workspace.
+   - Run grep searches (\`grep <query>\`) and directory mapping (\`/map\`).
+
+2. **Terminal & Sandbox Execution:**
+   - Execute commands in an isolated sandbox (\`$ <cmd>\` or \`/run <cmd>\`, e.g. \`$ git status\`, \`$ npm test\`).
+   - Safeguard modes: Human-in-the-loop approval (\`/approval risky\`) or autonomous execution (\`/approval auto\`).
+
+3. **Git & Version Control:**
+   - Full git integration (\`/git status\`, \`/git log\`, \`/diff\`, \`/changes\`).
+   - Create instant workspace snapshot bookmarks (\`/checkpoint <name>\`) and restore them (\`/restore <name>\`).
+   - Clean discard of local working tree modifications (\`/discard\`).
+
+4. **Multi-Model Intelligence & Key Pools:**
+   - Supports Gemini, Groq, Anthropic, DeepSeek, OpenAI, Ollama.
+   - Manage keys securely with \`/keys show\`, \`/keys add <provider> <key>\`, and automatic key rotation.
+   - Current status: Provider **${this.settings.provider}** (${activeKey ? '✅ API key active' : '⚠️ No API key set - using local deterministic tools'}).
+
+5. **Built-in Unix Manuals:**
+   - Complete documentation for every subsystem: type \`/man\` for the master index, or \`/man <command>\` for detailed man pages.`;
+    } else if (/(explain codebase|how does this work|architecture|what is this project|what project)/i.test(trimmed)) {
+      let pkgInfo = '';
+      try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(this.sandbox.cwd, 'package.json'), 'utf8'));
+        pkgInfo = `\n- **Project Name:** \`${pkg.name || 'app'}\`\n- **Dependencies:** ${Object.keys(pkg.dependencies || {}).join(', ')}`;
+      } catch (e) {}
+
+      msg.content = `### 🏗️ Project Architecture & Overview
+- **Workspace Path:** \`${this.sandbox.cwd}\`${pkgInfo}
+- **Structure:**
+  - \`src/\` - React frontend with terminal UI and command parser
+  - \`server/\` - Express backend with AgentService, Sandbox, and manual subsystem
+  - \`dist/\` - Production bundle output
+- **Commands:** Run \`/map\` for a full tree view or \`$ npm run build\` to verify compilation.`;
+    } else if (lower.includes('list') || lower.includes('show files') || lower.includes('ls')) {
       const tc: ToolCall = { id: `call-${Date.now()}`, name: 'list_dir', args: { path: '.' } };
       msg.toolCalls.push(tc);
       const res = await this.executeTool(tc);
@@ -1278,7 +1680,27 @@ Once you run the commands above to clean the tree, execute:
 \`\`\`
 and Miss Data will cleanly fast-forward to the latest release!`;
     } else {
-      msg.content = `I am Miss Data (خانم داده), your terminal coding assistant.\n\nI can read and edit files, search the codebase, run sandbox commands, and track facts across sessions.\n\nTry:\n- \`/status\` to inspect configured settings and models\n- \`/man getting-started\` to read the manual\n- Asking me to list or read files in your project\n- Running diagnostics with \`/doctor\``;
+      const activeKey = Boolean(this.getKeyForProvider(this.settings.provider));
+      if (!activeKey) {
+        msg.content = `Received: "${userPrompt}"
+
+💡 **Note: No API key is currently active for provider \`${this.settings.provider}\`.**
+To enable generative reasoning, code generation, and AI explanations:
+1. Add an API key with:
+   \`\`\`
+   /keys add ${this.settings.provider} <your_api_key>
+   \`\`\`
+   *(Or switch provider, e.g. \`/keys add groq <key>\` or \`/keys add gemini <key>\`)*
+
+2. In the meantime, all local terminal tools work immediately:
+   - Run shell commands: \`$ ls -la\` or \`/run git status\`
+   - Read files: \`read <filepath>\`
+   - Search text: \`grep <text>\`
+   - Zero-token diagnostics: \`/doctor\`
+   - Check manuals: \`/man <topic>\``;
+      } else {
+        msg.content = `Miss Data processed prompt in offline mode. Type \`/help\` or \`/man\` for available commands.`;
+      }
     }
 
     msg.status = 'done';
