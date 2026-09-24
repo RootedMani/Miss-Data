@@ -47,6 +47,12 @@ export interface AgentStatus {
   touchedFilesCount: number;
   availableProviders: string[];
   configuredKeys: Record<string, boolean>;
+  systemMetrics?: {
+    heapUsedMB: number;
+    heapTotalMB: number;
+    rssMB: number;
+    uptimeSec: number;
+  };
 }
 
 export interface FileItem {
@@ -58,10 +64,13 @@ export interface FileItem {
 
 export interface ManualPage {
   name: string;
+  category?: string;
   synopsis: string;
   description: string;
+  options?: { opt: string; desc: string }[];
   examples: string[];
   safety?: string;
+  seeAlso?: string[];
   aliases?: string[];
 }
 
@@ -97,5 +106,13 @@ export interface DirectCommandResult {
   stderr: string;
   exitCode: number;
   timestamp: number;
+}
+
+export interface AutocompleteResult {
+  prefix: string;
+  completion: string;
+  fullText: string;
+  type: 'command' | 'prompt' | 'path';
+  candidates?: string[];
 }
 
